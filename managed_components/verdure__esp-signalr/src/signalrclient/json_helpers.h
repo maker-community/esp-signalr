@@ -5,19 +5,19 @@
 #pragma once
 
 #include "signalrclient/signalr_value.h"
-#include <json/json.h>
+#include "signalrclient/json_adapter.h"
 #include <memory>
 
 namespace signalr
 {
     extern char record_separator;
 
-    signalr::value createValue(const Json::Value& v);
+    signalr::value createValue(const json_value& v);
 
-    Json::Value createJson(const signalr::value& v);
+    json_value createJson(const signalr::value& v);
 
     std::string base64Encode(const std::vector<uint8_t>& data);
 
-    Json::StreamWriterBuilder getJsonWriter();
-    std::unique_ptr<Json::CharReader> getJsonReader();
+    json_stream_writer_builder getJsonWriter();
+    std::unique_ptr<json_reader> getJsonReader();
 }

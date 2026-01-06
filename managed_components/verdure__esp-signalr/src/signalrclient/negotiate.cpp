@@ -62,38 +62,37 @@ namespace signalr
 
                 try
                 {
-                    Json::Value negotiation_response_json;
+                    json_value negotiation_response_json;
                     auto reader = getJsonReader();
-                    std::string errors;
 
-                    if (!reader->parse(http_response.content.c_str(), http_response.content.c_str() + http_response.content.size(), &negotiation_response_json, &errors))
+                    if (!reader->parse(http_response.content, negotiation_response_json))
                     {
-                        throw signalr_exception(errors);
+                        throw signalr_exception(reader->get_formatted_error_messages());
                     }
 
                     negotiation_response response;
 
-                    if (negotiation_response_json.isMember("error"))
+                    if (negotiation_response_json.is_member("error"))
                     {
-                        response.error = negotiation_response_json["error"].asString();
+                        response.error = negotiation_response_json["error"].as_string();
                         callback(std::move(response), nullptr);
                         return;
                     }
 
                     int server_negotiate_version = 0;
-                    if (negotiation_response_json.isMember("negotiateVersion"))
+                    if (negotiation_response_json.is_member("negotiateVersion"))
                     {
-                        server_negotiate_version = negotiation_response_json["negotiateVersion"].asInt();
+                        server_negotiate_version = negotiation_response_json["negotiateVersion"].as_int();
                     }
 
-                    if (negotiation_response_json.isMember("connectionId"))
+                    if (negotiation_response_json.is_member("connectionId"))
                     {
-                        response.connectionId = negotiation_response_json["connectionId"].asString();
+                        response.connectionId = negotiation_response_json["connectionId"].as_string();
                     }
 
-                    if (negotiation_response_json.isMember("connectionToken"))
+                    if (negotiation_response_json.is_member("connectionToken"))
                     {
-                        response.connectionToken = negotiation_response_json["connectionToken"].asString();
+                        response.connectionToken = negotiation_response_json["connectionToken"].as_string();
                     }
 
                     if (server_negotiate_version <= 0)
@@ -101,33 +100,36 @@ namespace signalr
                         response.connectionToken = response.connectionId;
                     }
 
-                    if (negotiation_response_json.isMember("availableTransports"))
+                    if (negotiation_response_json.is_member("availableTransports"))
                     {
-                        for (const auto& transportData : negotiation_response_json["availableTransports"])
+                        const auto& transports = negotiation_response_json["availableTransports"];
+                        for (size_t i = 0; i < transports.size(); i++)
                         {
+                            const auto& transportData = transports[i];
                             available_transport transport;
-                            transport.transport = transportData["transport"].asString();
+                            transport.transport = transportData["transport"].as_string();
 
-                            for (const auto& format : transportData["transferFormats"])
+                            const auto& formats = transportData["transferFormats"];
+                            for (size_t j = 0; j < formats.size(); j++)
                             {
-                                transport.transfer_formats.push_back(format.asString());
+                                transport.transfer_formats.push_back(formats[j].as_string());
                             }
 
                             response.availableTransports.push_back(transport);
                         }
                     }
 
-                    if (negotiation_response_json.isMember("url"))
+                    if (negotiation_response_json.is_member("url"))
                     {
-                        response.url = negotiation_response_json["url"].asString();
+                        response.url = negotiation_response_json["url"].as_string();
 
-                        if (negotiation_response_json.isMember("accessToken"))
+                        if (negotiation_response_json.is_member("accessToken"))
                         {
-                            response.accessToken = negotiation_response_json["accessToken"].asString();
+                            response.accessToken = negotiation_response_json["accessToken"].as_string();
                         }
                     }
 
-                    if (negotiation_response_json.isMember("ProtocolVersion"))
+                    if (negotiation_response_json.is_member("ProtocolVersion"))
                     {
                         callback({}, std::make_exception_ptr(
                             signalr_exception("Detected a connection attempt to an ASP.NET SignalR Server. This client only supports connecting to an ASP.NET Core SignalR Server. See https://aka.ms/signalr-core-differences for details.")));

@@ -11,38 +11,41 @@ namespace signalr
 {
     char record_separator = '\x1e';
 
-    signalr::value createValue(const Json::Value& v)
+    signalr::value createValue(const json_value& v)
     {
-        switch (v.type())
+        if (v.is_bool())
         {
-        case Json::ValueType::booleanValue:
-            return signalr::value(v.asBool());
-        case Json::ValueType::realValue:
-        case Json::ValueType::intValue:
-        case Json::ValueType::uintValue:
-            return signalr::value(v.asDouble());
-        case Json::ValueType::stringValue:
-            return signalr::value(v.asString());
-        case Json::ValueType::arrayValue:
+            return signalr::value(v.as_bool());
+        }
+        else if (v.is_double())
+        {
+            return signalr::value(v.as_double());
+        }
+        else if (v.is_string())
+        {
+            return signalr::value(v.as_string());
+        }
+        else if (v.is_array())
         {
             std::vector<signalr::value> vec;
-            for (auto& val : v)
+            for (size_t i = 0; i < v.size(); i++)
             {
-                vec.push_back(createValue(val));
+                vec.push_back(createValue(v[i]));
             }
             return signalr::value(std::move(vec));
         }
-        case Json::ValueType::objectValue:
+        else if (v.is_object())
         {
             std::map<std::string, signalr::value> map;
-            for (const auto& val : v.getMemberNames())
+            auto members = v.get_member_names();
+            for (const auto& member : members)
             {
-                map.insert({ val, createValue(v[val]) });
+                map.insert({ member, createValue(v[member]) });
             }
             return signalr::value(std::move(map));
         }
-        case Json::ValueType::nullValue:
-        default:
+        else // null or unknown
+        {
             return signalr::value();
         }
     }
@@ -109,12 +112,12 @@ namespace signalr
         return base64result;
     }
 
-    Json::Value createJson(const signalr::value& v)
+    json_value createJson(const signalr::value& v)
     {
         switch (v.type())
         {
         case signalr::value_type::boolean:
-            return Json::Value(v.as_bool());
+            return json_value::from_bool(v.as_bool());
         case signalr::value_type::float64:
         {
             auto value = v.as_double();
@@ -128,12 +131,12 @@ namespace signalr
                     if (value >= (double)INT64_MIN)
                     {
                         // Fits within int64_t
-                        return Json::Value(static_cast<int64_t>(intPart));
+                        return json_value::from_int(static_cast<int>(intPart));
                     }
                     else
                     {
                         // Remain as double
-                        return Json::Value(value);
+                        return json_value::from_double(value);
                     }
                 }
                 else
@@ -141,23 +144,23 @@ namespace signalr
                     if (value <= (double)UINT64_MAX)
                     {
                         // Fits within uint64_t
-                        return Json::Value(static_cast<uint64_t>(intPart));
+                        return json_value::from_int(static_cast<int>(intPart));
                     }
                     else
                     {
                         // Remain as double
-                        return Json::Value(value);
+                        return json_value::from_double(value);
                     }
                 }
             }
-            return Json::Value(v.as_double());
+            return json_value::from_double(v.as_double());
         }
         case signalr::value_type::string:
-            return Json::Value(v.as_string());
+            return json_value::from_string(v.as_string());
         case signalr::value_type::array:
         {
             const auto& array = v.as_array();
-            Json::Value vec(Json::ValueType::arrayValue);
+            json_value vec = json_value::array();
             for (auto& val : array)
             {
                 vec.append(createJson(val));
@@ -167,7 +170,7 @@ namespace signalr
         case signalr::value_type::map:
         {
             const auto& obj = v.as_map();
-            Json::Value object(Json::ValueType::objectValue);
+            json_value object = json_value::object();
             for (auto& val : obj)
             {
                 object[val.first] = createJson(val.second);
@@ -177,27 +180,21 @@ namespace signalr
         case signalr::value_type::binary:
         {
             const auto& binary = v.as_binary();
-            return Json::Value(base64Encode(binary));
+            return json_value::from_string(base64Encode(binary));
         }
         case signalr::value_type::null:
         default:
-            return Json::Value(Json::ValueType::nullValue);
+            return json_value::null();
         }
     }
 
-    Json::StreamWriterBuilder getJsonWriter()
+    json_stream_writer_builder getJsonWriter()
     {
-        auto writer = Json::StreamWriterBuilder();
-        writer["commentStyle"] = "None";
-        writer["indentation"] = "";
-        return writer;
+        return json_stream_writer_builder();
     }
 
-    std::unique_ptr<Json::CharReader> getJsonReader()
+    std::unique_ptr<json_reader> getJsonReader()
     {
-        auto builder = Json::CharReaderBuilder();
-        Json::CharReaderBuilder::strictMode(&builder.settings_);
-        std::unique_ptr<Json::CharReader> reader(builder.newCharReader());
-        return reader;
+        return std::unique_ptr<json_reader>(new json_reader());
     }
 }

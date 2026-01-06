@@ -12,7 +12,7 @@ namespace signalr
 {
     std::string signalr::json_hub_protocol::write_message(const hub_message* hub_message) const
     {
-        Json::Value object(Json::ValueType::objectValue);
+        json_value object = json_value::object();
 
 #pragma warning (push)
 #pragma warning (disable: 4061)
@@ -21,12 +21,12 @@ namespace signalr
         case message_type::invocation:
         {
             auto invocation = static_cast<invocation_message const*>(hub_message);
-            object["type"] = static_cast<int>(invocation->message_type);
+            object["type"] = json_value::from_int(static_cast<int>(invocation->message_type));
             if (!invocation->invocation_id.empty())
             {
-                object["invocationId"] = invocation->invocation_id;
+                object["invocationId"] = json_value::from_string(invocation->invocation_id);
             }
-            object["target"] = invocation->target;
+            object["target"] = json_value::from_string(invocation->target);
             object["arguments"] = createJson(invocation->arguments);
             // TODO: streamIds
 
@@ -35,11 +35,11 @@ namespace signalr
         case message_type::completion:
         {
             auto completion = static_cast<completion_message const*>(hub_message);
-            object["type"] = static_cast<int>(completion->message_type);
-            object["invocationId"] = completion->invocation_id;
+            object["type"] = json_value::from_int(static_cast<int>(completion->message_type));
+            object["invocationId"] = json_value::from_string(completion->invocation_id);
             if (!completion->error.empty())
             {
-                object["error"] = completion->error;
+                object["error"] = json_value::from_string(completion->error);
             }
             else if (completion->has_result)
             {
@@ -50,7 +50,7 @@ namespace signalr
         case message_type::ping:
         {
             auto ping = static_cast<ping_message const*>(hub_message);
-            object["type"] = static_cast<int>(ping->message_type);
+            object["type"] = json_value::from_int(static_cast<int>(ping->message_type));
             break;
         }
         // TODO: other message types
@@ -59,7 +59,8 @@ namespace signalr
         }
 #pragma warning (pop)
 
-        return Json::writeString(getJsonWriter(), object) + record_separator;
+        auto writer = getJsonWriter();
+        return writer.write(object) + record_separator;
     }
 
     std::vector<std::unique_ptr<hub_message>> json_hub_protocol::parse_messages(const std::string& message) const
@@ -85,13 +86,13 @@ namespace signalr
 
     std::unique_ptr<hub_message> json_hub_protocol::parse_message(const char* begin, size_t length) const
     {
-        Json::Value root;
+        json_value root;
         auto reader = getJsonReader();
-        std::string errors;
 
-        if (!reader->parse(begin, begin + length, &root, &errors))
+        std::string json_str(begin, length);
+        if (!reader->parse(json_str, root))
         {
-            throw signalr_exception(errors);
+            throw signalr_exception(reader->get_formatted_error_messages());
         }
 
         // TODO: manually go through the json object to avoid short-lived allocations

@@ -19,7 +19,8 @@ namespace signalr
                 { "version", signalr::value((double)protocol->version()) }
             };
 
-            return Json::writeString(getJsonWriter(), createJson(signalr::value(std::move(map)))) + record_separator;
+            auto writer = getJsonWriter();
+            return writer.write(createJson(signalr::value(std::move(map)))) + record_separator;
         }
 
         std::tuple<std::string, signalr::value> parse_handshake(const std::string& response)
@@ -31,13 +32,12 @@ namespace signalr
             }
             auto message = response.substr(0, pos);
 
-            Json::Value root;
+            json_value root;
             auto reader = getJsonReader();
-            std::string errors;
 
-            if (!reader->parse(message.c_str(), message.c_str() + message.size(), &root, &errors))
+            if (!reader->parse(message, root))
             {
-                throw signalr_exception(errors);
+                throw signalr_exception(reader->get_formatted_error_messages());
             }
             auto remaining_data = response.substr(pos + 1);
             return std::forward_as_tuple(remaining_data, createValue(root));
