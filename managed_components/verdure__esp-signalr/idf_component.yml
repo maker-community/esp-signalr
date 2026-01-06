@@ -1,6 +1,11 @@
 version: "1.0.0"
 description: "ESP32 SignalR Client Library - Adapted from Microsoft SignalR-Client-Cpp"
 url: "https://github.com/maker-community/esp-signalr"
+repository: "https://github.com/maker-community/esp-signalr.git"
+documentation: "https://github.com/maker-community/esp-signalr/blob/main/README.md"
+
+examples:
+  - path: "https://github.com/maker-community/esp-signalr-example"
 
 targets:
   - esp32
@@ -15,3 +20,8 @@ dependencies:
   
   espressif/json:
     version: ">=1.0.0"
+
+files:
+  exclude:
+    - "example/**"
+    - "examples/**"

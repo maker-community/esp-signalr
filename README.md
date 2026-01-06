@@ -23,8 +23,18 @@ See the comprehensive library in `managed_components/verdure__esp-signalr/`:
 - **[README.md](managed_components/verdure__esp-signalr/README.md)** - Main library documentation
 - **[QUICKSTART.md](managed_components/verdure__esp-signalr/QUICKSTART.md)** - Quick start guide
 - **[INTEGRATION_GUIDE.md](managed_components/verdure__esp-signalr/INTEGRATION_GUIDE.md)** - Detailed integration guide
-- **[example/](managed_components/verdure__esp-signalr/example/)** - Complete working example
-- **[TEST_SERVER.md](managed_components/verdure__esp-signalr/example/TEST_SERVER.md)** - ASP.NET Core test server setup
+
+## 📦 Complete Example
+
+For a complete working example project, see:
+**[esp-signalr-example](https://github.com/maker-community/esp-signalr-example)**
+
+The example includes:
+- Complete ESP-IDF project setup
+- WiFi connection handling
+- SignalR hub connection
+- Message sending/receiving
+- Test server setup guide
 
 ## Installation
 
@@ -104,7 +114,6 @@ esp-signalr/
 │   │   └── json_adapter.cpp       # cJSON adapter
 │   ├── include/                   # Public headers
 │   ├── third_party_code/          # URI utilities
-│   ├── example/                   # Example application
 │   ├── CMakeLists.txt
 │   ├── idf_component.yml
 │   ├── README.md
@@ -113,6 +122,9 @@ esp-signalr/
 │   └── extract_core_files.sh
 └── README.md (this file)
 ```
+
+For a complete example application, see the separate repository:
+[esp-signalr-example](https://github.com/maker-community/esp-signalr-example)
 
 ## Architecture
 
@@ -138,21 +150,13 @@ The library uses an adapter pattern to integrate SignalR protocol with ESP32 nat
 
 ### Building the Example
 
-```bash
-cd managed_components/verdure__esp-signalr/example
-idf.py set-target esp32
-idf.py build
-idf.py flash monitor
-```
+See the complete example project at:
+[esp-signalr-example](https://github.com/maker-community/esp-signalr-example)
 
 ### Running Tests
 
-Set up an ASP.NET Core SignalR test server:
-
-```bash
-cd managed_components/verdure__esp-signalr
-# Follow instructions in example/TEST_SERVER.md
-```
+Set up an ASP.NET Core SignalR test server following the instructions in the example repository:
+[TEST_SERVER.md](https://github.com/maker-community/esp-signalr-example/blob/main/TEST_SERVER.md)
 
 ## Contributing
 
@@ -176,7 +180,7 @@ MIT License - See LICENSE file for details
 
 - **Issues**: https://github.com/maker-community/esp-signalr/issues
 - **Documentation**: https://github.com/maker-community/esp-signalr
-- **Example Code**: `managed_components/verdure__esp-signalr/example/`
+- **Example Code**: https://github.com/maker-community/esp-signalr-example
 
 ## Roadmap
 
