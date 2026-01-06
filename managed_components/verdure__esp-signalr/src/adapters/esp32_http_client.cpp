@@ -5,6 +5,13 @@
 
 static const char* TAG = "ESP32_HTTP_CLIENT";
 
+// Configuration constants
+namespace {
+    constexpr uint32_t HTTP_TIMEOUT_MS = 10000;          // HTTP request timeout
+    constexpr size_t HTTP_BUFFER_SIZE = 2048;            // HTTP receive buffer size
+    constexpr size_t HTTP_BUFFER_SIZE_TX = 2048;         // HTTP transmit buffer size
+}
+
 namespace signalr {
 
 esp32_http_client::esp32_http_client(const signalr_client_config& config) {
@@ -62,11 +69,11 @@ http_response esp32_http_client::perform_request(const std::string& url,
     esp_http_client_config_t config = {};
     config.url = url.c_str();
     config.method = method;
-    config.timeout_ms = 10000;
+    config.timeout_ms = HTTP_TIMEOUT_MS;
     config.event_handler = http_event_handler;
     config.user_data = &m_response_buffer;
-    config.buffer_size = 2048;
-    config.buffer_size_tx = 2048;
+    config.buffer_size = HTTP_BUFFER_SIZE;
+    config.buffer_size_tx = HTTP_BUFFER_SIZE_TX;
 
     esp_http_client_handle_t client = esp_http_client_init(&config);
     if (!client) {

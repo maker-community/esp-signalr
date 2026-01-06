@@ -11,6 +11,16 @@
 
 static const char* TAG = "signalr_scheduler";
 
+// Configuration constants
+namespace {
+    constexpr uint32_t WORKER_TASK_STACK_SIZE = 4096;   // Stack size for worker tasks
+    constexpr uint32_t SCHEDULER_TASK_STACK_SIZE = 8192; // Stack size for scheduler task
+    constexpr UBaseType_t TASK_PRIORITY = 5;             // Priority for all SignalR tasks
+    constexpr uint32_t SHUTDOWN_RETRY_COUNT = 100;       // Max retries when shutting down
+    constexpr uint32_t SHUTDOWN_RETRY_DELAY_MS = 10;     // Delay between shutdown retries
+    constexpr size_t WORKER_THREAD_POOL_SIZE = 5;        // Number of worker threads
+}
+
 namespace signalr
 {
     // Worker thread implementation
@@ -79,9 +89,9 @@ namespace signalr
         BaseType_t result = xTaskCreate(
             task_function,
             "signalr_worker",
-            4096,  // Stack size
+            WORKER_TASK_STACK_SIZE,
             m_internals.get(),
-            5,  // Priority
+            TASK_PRIORITY,
             &m_task_handle
         );
         
@@ -119,9 +129,9 @@ namespace signalr
         xSemaphoreGive(m_internals->m_callback_sem);
         
         // Wait for task to complete (with timeout)
-        for (int i = 0; i < 100 && m_task_handle != nullptr; i++)
+        for (uint32_t i = 0; i < SHUTDOWN_RETRY_COUNT && m_task_handle != nullptr; i++)
         {
-            vTaskDelay(pdMS_TO_TICKS(10));
+            vTaskDelay(pdMS_TO_TICKS(SHUTDOWN_RETRY_DELAY_MS));
         }
     }
 
@@ -149,7 +159,7 @@ namespace signalr
     {
         auto* internals = static_cast<struct signalr_default_scheduler::internals*>(param);
         
-        std::vector<thread> threads(5);  // 5 worker threads
+        std::vector<thread> threads(WORKER_THREAD_POOL_SIZE);  // Worker threads
         
         size_t prev_callback_count = 0;
         
@@ -247,9 +257,9 @@ namespace signalr
         BaseType_t result = xTaskCreate(
             scheduler_task_function,
             "signalr_sched",
-            8192,  // Larger stack for scheduler
+            SCHEDULER_TASK_STACK_SIZE,
             m_internals.get(),
-            5,  // Priority
+            TASK_PRIORITY,
             &m_scheduler_task_handle
         );
         
@@ -279,9 +289,9 @@ namespace signalr
         close();
         
         // Wait for scheduler task to complete (with timeout)
-        for (int i = 0; i < 100 && m_scheduler_task_handle != nullptr; i++)
+        for (uint32_t i = 0; i < SHUTDOWN_RETRY_COUNT && m_scheduler_task_handle != nullptr; i++)
         {
-            vTaskDelay(pdMS_TO_TICKS(10));
+            vTaskDelay(pdMS_TO_TICKS(SHUTDOWN_RETRY_DELAY_MS));
         }
         
         if (m_internals->m_callback_mutex != nullptr)

@@ -5,6 +5,13 @@
 
 static const char* TAG = "ESP32_WS_CLIENT";
 
+// Configuration constants
+namespace {
+    constexpr size_t WEBSOCKET_BUFFER_SIZE = 2048;      // WebSocket receive buffer size
+    constexpr size_t WEBSOCKET_TASK_STACK_SIZE = 6144;   // WebSocket task stack size
+    constexpr uint32_t CONNECTION_TIMEOUT_MS = 10000;     // Connection establishment timeout
+}
+
 namespace signalr {
 
 esp32_websocket_client::esp32_websocket_client(const signalr_client_config& config)
@@ -35,8 +42,8 @@ void esp32_websocket_client::connect(const std::string& url) {
 
     esp_websocket_client_config_t ws_cfg = {};
     ws_cfg.uri = url.c_str();
-    ws_cfg.buffer_size = 2048;
-    ws_cfg.task_stack = 6144;
+    ws_cfg.buffer_size = WEBSOCKET_BUFFER_SIZE;
+    ws_cfg.task_stack = WEBSOCKET_TASK_STACK_SIZE;
 
     m_client = esp_websocket_client_init(&ws_cfg);
     if (!m_client) {
@@ -65,7 +72,7 @@ void esp32_websocket_client::connect(const std::string& url) {
     EventBits_t bits = xEventGroupWaitBits(m_event_group,
                                           CONNECTED_BIT | DISCONNECTED_BIT,
                                           pdFALSE, pdFALSE,
-                                          pdMS_TO_TICKS(10000));
+                                          pdMS_TO_TICKS(CONNECTION_TIMEOUT_MS));
 
     if (!(bits & CONNECTED_BIT)) {
         ESP_LOGE(TAG, "Connection timeout or failed");
