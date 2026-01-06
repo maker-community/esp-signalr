@@ -4,7 +4,7 @@
 
 - ESP-IDF >= 5.0.0
 - WiFi-enabled ESP32 board
-- ASP.NET Core SignalR server (see `example/TEST_SERVER.md`)
+- ASP.NET Core SignalR server (see [Test Server Setup](https://github.com/maker-community/esp-signalr-example/blob/main/TEST_SERVER.md))
 
 ## Installation
 
@@ -117,7 +117,8 @@ connection.stop([](std::exception_ptr exception) {
 
 ## Complete Example
 
-See `example/main/signalr_example.cpp` for a full working example with WiFi setup.
+For a full working example with WiFi setup, see the separate repository:
+**[esp-signalr-example](https://github.com/maker-community/esp-signalr-example)**
 
 ## Memory Considerations
 
@@ -174,8 +175,8 @@ connection.set_disconnected([](std::exception_ptr exception) {
 ## Next Steps
 
 - Read the [Integration Guide](INTEGRATION_GUIDE.md) for detailed implementation
-- Setup a [test server](example/TEST_SERVER.md) for development
-- Explore the [example code](example/main/signalr_example.cpp)
+- Setup a [test server](https://github.com/maker-community/esp-signalr-example/blob/main/TEST_SERVER.md) for development
+- Explore the [complete example code](https://github.com/maker-community/esp-signalr-example)
 
 ## Support
 

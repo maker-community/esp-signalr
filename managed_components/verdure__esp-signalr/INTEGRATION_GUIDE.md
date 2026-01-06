@@ -351,7 +351,8 @@ void log_memory_usage() {
 
 ## Complete Example
 
-See `example/main/signalr_example.cpp` for a fully working implementation.
+For a fully working implementation, see the separate repository:
+**[esp-signalr-example](https://github.com/maker-community/esp-signalr-example)**
 
 ## Troubleshooting
 
@@ -374,7 +375,7 @@ See `example/main/signalr_example.cpp` for a fully working implementation.
 ## Next Steps
 
 - Read the [Quick Start Guide](QUICKSTART.md)
-- Setup a [test server](example/TEST_SERVER.md)
+- Setup a [test server](https://github.com/maker-community/esp-signalr-example/blob/main/TEST_SERVER.md)
 - Explore advanced features in the API documentation
 
 ## Support

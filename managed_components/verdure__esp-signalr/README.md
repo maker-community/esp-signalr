@@ -103,7 +103,10 @@ CONFIG_COMPILER_CXX_EXCEPTIONS_EMG_POOL_SIZE=512
 
 ## Examples
 
-See the `example/` directory for a complete working example with:
+For a complete working example, see the separate repository:
+**[esp-signalr-example](https://github.com/maker-community/esp-signalr-example)**
+
+The example includes:
 - WiFi connection setup
 - SignalR hub connection
 - Message sending and receiving
@@ -113,7 +116,8 @@ See the `example/` directory for a complete working example with:
 
 - [Quick Start Guide](QUICKSTART.md)
 - [Integration Guide](INTEGRATION_GUIDE.md)
-- [ASP.NET Core Test Server Setup](example/TEST_SERVER.md)
+- [Complete Example Project](https://github.com/maker-community/esp-signalr-example)
+- [ASP.NET Core Test Server Setup](https://github.com/maker-community/esp-signalr-example/blob/main/TEST_SERVER.md)
 
 ## License
 
