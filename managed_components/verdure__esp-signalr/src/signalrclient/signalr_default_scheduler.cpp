@@ -2,98 +2,127 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
+// ESP32 adaptation: FreeRTOS-based implementation
+
 #include "stdafx.h"
-#include <assert.h>
 #include "signalr_default_scheduler.h"
-#include <thread>
+#include "esp_log.h"
+#include <assert.h>
+
+static const char* TAG = "signalr_scheduler";
 
 namespace signalr
 {
+    // Worker thread implementation
+    void thread::task_function(void* param)
+    {
+        auto* internals = static_cast<struct internals*>(param);
+        
+        while (true)
+        {
+            // Wait for work to be assigned
+            xSemaphoreTake(internals->m_callback_sem, portMAX_DELAY);
+            
+            signalr_base_cb cb;
+            {
+                // Lock to get the callback
+                xSemaphoreTake(internals->m_callback_mutex, portMAX_DELAY);
+                
+                if (internals->m_closed && internals->m_callback == nullptr)
+                {
+                    xSemaphoreGive(internals->m_callback_mutex);
+                    vTaskDelete(NULL);
+                    return;
+                }
+                
+                cb = internals->m_callback;
+                internals->m_callback = nullptr;
+                
+                xSemaphoreGive(internals->m_callback_mutex);
+            }
+            
+            // Execute the callback
+            if (cb)
+            {
+                try
+                {
+                    cb();
+                }
+                catch (...)
+                {
+                    ESP_LOGE(TAG, "Exception in worker thread callback");
+                }
+            }
+            
+            // Mark as not busy
+            internals->m_busy = false;
+        }
+    }
+
     thread::thread()
         : m_internals(std::make_shared<internals>())
+        , m_task_handle(nullptr)
     {
-        auto internals = m_internals;
-
-        m_thread = std::thread([=]()
-            {
-                while (true)
-                {
-                    {
-                        signalr_base_cb cb;
-                        {
-                            std::unique_lock<std::mutex> lock(internals->m_callback_lock);
-                            auto& callback = internals->m_callback;
-                            const auto& closed = internals->m_closed;
-
-                            if (closed && callback == nullptr)
-                            {
-                                return;
-                            }
-
-                            if (callback == nullptr)
-                            {
-                                internals->m_callback_cv.wait(lock,
-                                    [&callback, &closed]
-                                    {
-                                        return closed || callback != nullptr;
-                                    });
-                            }
-
-                            if (closed && callback == nullptr)
-                            {
-                                assert(callback == nullptr);
-                                return;
-                            }
-
-                            cb = callback;
-                            internals->m_callback = nullptr;
-                        } // unlock
-
-                        try
-                        {
-                            cb();
-                        }
-                        catch (...)
-                        {
-                            // ignore exceptions?
-                            assert(false);
-                        }
-                    } // destruct cb, otherwise it's possible a shared_ptr is being held by the lambda/function and on destruction it could schedule work which could be
-                    // added to this thread and if it then blocks waiting for completion it would deadlock. If we destruct before setting the m_busy flag,
-                    // another thread will run the work instead.
-
-                    internals->m_busy = false;
-                }
-
-                assert(internals->m_callback == nullptr);
-            });
+        m_internals->m_callback = nullptr;
+        m_internals->m_callback_mutex = xSemaphoreCreateMutex();
+        m_internals->m_callback_sem = xSemaphoreCreateBinary();
+        m_internals->m_closed = false;
+        m_internals->m_busy = false;
+        
+        if (m_internals->m_callback_mutex == nullptr || m_internals->m_callback_sem == nullptr)
+        {
+            ESP_LOGE(TAG, "Failed to create synchronization primitives");
+            return;
+        }
+        
+        // Create the worker task
+        BaseType_t result = xTaskCreate(
+            task_function,
+            "signalr_worker",
+            4096,  // Stack size
+            m_internals.get(),
+            5,  // Priority
+            &m_task_handle
+        );
+        
+        if (result != pdPASS)
+        {
+            ESP_LOGE(TAG, "Failed to create worker task");
+        }
     }
 
     void thread::add(signalr_base_cb cb)
     {
-        {
-            assert(m_internals->m_closed == false);
-            assert(m_internals->m_busy == false);
-
-            std::lock_guard<std::mutex> lock(m_internals->m_callback_lock);
-            m_internals->m_callback = cb;
-            m_internals->m_busy = true;
-        } // unlock
+        xSemaphoreTake(m_internals->m_callback_mutex, portMAX_DELAY);
+        
+        assert(m_internals->m_closed == false);
+        assert(m_internals->m_busy == false);
+        
+        m_internals->m_callback = cb;
+        m_internals->m_busy = true;
+        
+        xSemaphoreGive(m_internals->m_callback_mutex);
     }
 
     void thread::start()
     {
-        m_internals->m_callback_cv.notify_one();
+        xSemaphoreGive(m_internals->m_callback_sem);
     }
 
     void thread::shutdown()
     {
+        xSemaphoreTake(m_internals->m_callback_mutex, portMAX_DELAY);
+        m_internals->m_closed = true;
+        xSemaphoreGive(m_internals->m_callback_mutex);
+        
+        // Signal the task to wake up and exit
+        xSemaphoreGive(m_internals->m_callback_sem);
+        
+        // Wait for task to complete (with timeout)
+        for (int i = 0; i < 100 && m_task_handle != nullptr; i++)
         {
-            std::unique_lock<std::mutex> lock(m_internals->m_callback_lock);
-            m_internals->m_closed = true;
+            vTaskDelay(pdMS_TO_TICKS(10));
         }
-        m_internals->m_callback_cv.notify_one();
-        m_thread.join();
     }
 
     bool thread::is_free() const
@@ -104,107 +133,168 @@ namespace signalr
     thread::~thread()
     {
         shutdown();
+        
+        if (m_internals->m_callback_mutex != nullptr)
+        {
+            vSemaphoreDelete(m_internals->m_callback_mutex);
+        }
+        if (m_internals->m_callback_sem != nullptr)
+        {
+            vSemaphoreDelete(m_internals->m_callback_sem);
+        }
+    }
+
+    // Scheduler task implementation
+    void signalr_default_scheduler::scheduler_task_function(void* param)
+    {
+        auto* internals = static_cast<struct signalr_default_scheduler::internals*>(param);
+        
+        std::vector<thread> threads(5);  // 5 worker threads
+        
+        size_t prev_callback_count = 0;
+        
+        while (true)
+        {
+            // Wait for callbacks with timeout
+            xSemaphoreTake(internals->m_callback_sem, pdMS_TO_TICKS(15));
+            
+            xSemaphoreTake(internals->m_callback_mutex, portMAX_DELAY);
+            
+            if (internals->m_closed && internals->m_callbacks.empty())
+            {
+                xSemaphoreGive(internals->m_callback_mutex);
+                vTaskDelete(NULL);
+                return;
+            }
+            
+            // Find callbacks ready to run
+            auto curr_time = std::chrono::steady_clock::now();
+            auto it = internals->m_callbacks.begin();
+            
+            while (it != internals->m_callbacks.end())
+            {
+                bool found = false;
+                
+                if (it->second <= curr_time)
+                {
+                    // Find a free worker thread
+                    for (auto& worker : threads)
+                    {
+                        if (worker.is_free())
+                        {
+                            worker.add(it->first);
+                            it->first = nullptr;
+                            worker.start();
+                            found = true;
+                            break;
+                        }
+                    }
+                    
+                    if (!found)
+                    {
+                        // No free workers, break and try again later
+                        break;
+                    }
+                }
+                
+                if (found)
+                {
+                    it = internals->m_callbacks.erase(it);
+                }
+                else
+                {
+                    ++it;
+                }
+            }
+            
+            prev_callback_count = internals->m_callbacks.size();
+            
+            xSemaphoreGive(internals->m_callback_mutex);
+        }
     }
 
     void signalr_default_scheduler::schedule(const signalr_base_cb& cb, std::chrono::milliseconds delay)
     {
-        {
-            std::lock_guard<std::mutex> lock(m_internals->m_callback_lock);
-            assert(m_internals->m_closed == false);
-            m_internals->m_callbacks.push_back(std::make_pair(cb, std::chrono::steady_clock::now() + delay));
-        } // unlock
-
-        // If callback has a delay, no point in running the logic to check if it should run early
+        xSemaphoreTake(m_internals->m_callback_mutex, portMAX_DELAY);
+        
+        assert(m_internals->m_closed == false);
+        
+        m_internals->m_callbacks.push_back(
+            std::make_pair(cb, std::chrono::steady_clock::now() + delay)
+        );
+        
+        xSemaphoreGive(m_internals->m_callback_mutex);
+        
+        // Notify scheduler if no delay
         if (delay == std::chrono::milliseconds::zero())
         {
-            m_internals->m_callback_cv.notify_one();
+            xSemaphoreGive(m_internals->m_callback_sem);
         }
     }
 
     void signalr_default_scheduler::run()
     {
-        auto internals = m_internals;
-
-        std::thread([=]()
-            {
-                std::vector<thread> threads{ 5 };
-
-                std::unique_lock<std::mutex> lock(internals->m_callback_lock);
-
-                auto prev_callback_count = size_t{ 0 };
-
-                while (true)
-                {
-                    auto& callbacks = internals->m_callbacks;
-                    const auto& closed = internals->m_closed;
-
-                    if (closed && callbacks.empty())
-                    {
-                        return;
-                    }
-
-                    internals->m_callback_cv.wait_for(lock, std::chrono::milliseconds(15),
-                        [&callbacks, &closed, &prev_callback_count]
-                        {
-                            return closed || prev_callback_count != callbacks.size();
-                        });
-
-                    // find the first callback that is ready to run, find a thread to run it and remove it from the list
-                    auto curr_time = std::chrono::steady_clock::now();
-                    auto it = callbacks.begin();
-                    while (it != callbacks.end())
-                    {
-                        auto found = false;
-                        if (it->second <= curr_time)
-                        {
-                            for (auto& thread : threads)
-                            {
-                                if (thread.is_free())
-                                {
-                                    {
-                                        thread.add((*it).first);
-                                        (*it).first = nullptr;
-                                        // destruct callback in case the destructor can schedule a job which would throw on recursive lock acquisition
-                                    }
-                                    thread.start();
-                                    found = true;
-                                    break;
-                                }
-                            }
-                            if (!found)
-                            {
-                                break;
-                            }
-                        }
-                        if (found)
-                        {
-                            it = callbacks.erase(it);
-                        }
-                        else
-                        {
-                            ++it;
-                        }
-                    }
-
-                    prev_callback_count = callbacks.size();
-                }
-
-                assert(internals->m_callbacks.empty());
-            }).detach();
+        m_internals->m_callback_mutex = xSemaphoreCreateMutex();
+        m_internals->m_callback_sem = xSemaphoreCreateBinary();
+        m_internals->m_closed = false;
+        
+        if (m_internals->m_callback_mutex == nullptr || m_internals->m_callback_sem == nullptr)
+        {
+            ESP_LOGE(TAG, "Failed to create scheduler synchronization primitives");
+            return;
+        }
+        
+        BaseType_t result = xTaskCreate(
+            scheduler_task_function,
+            "signalr_sched",
+            8192,  // Larger stack for scheduler
+            m_internals.get(),
+            5,  // Priority
+            &m_scheduler_task_handle
+        );
+        
+        if (result != pdPASS)
+        {
+            ESP_LOGE(TAG, "Failed to create scheduler task");
+        }
     }
 
     void signalr_default_scheduler::close()
     {
-        m_internals->m_closed = true;
-        m_internals->m_callback_cv.notify_one();
+        if (m_internals->m_callback_mutex != nullptr)
+        {
+            xSemaphoreTake(m_internals->m_callback_mutex, portMAX_DELAY);
+            m_internals->m_closed = true;
+            xSemaphoreGive(m_internals->m_callback_mutex);
+        }
+        
+        if (m_internals->m_callback_sem != nullptr)
+        {
+            xSemaphoreGive(m_internals->m_callback_sem);
+        }
     }
 
     signalr_default_scheduler::~signalr_default_scheduler()
     {
         close();
+        
+        // Wait for scheduler task to complete (with timeout)
+        for (int i = 0; i < 100 && m_scheduler_task_handle != nullptr; i++)
+        {
+            vTaskDelay(pdMS_TO_TICKS(10));
+        }
+        
+        if (m_internals->m_callback_mutex != nullptr)
+        {
+            vSemaphoreDelete(m_internals->m_callback_mutex);
+        }
+        if (m_internals->m_callback_sem != nullptr)
+        {
+            vSemaphoreDelete(m_internals->m_callback_sem);
+        }
     }
 
-    // This will schedule the given func to run every second until the func returns true.
+    // Timer functions remain the same
     void timer(const std::shared_ptr<scheduler>& scheduler, std::function<bool(std::chrono::milliseconds)> func)
     {
         timer_internal(scheduler, func, std::chrono::milliseconds::zero());

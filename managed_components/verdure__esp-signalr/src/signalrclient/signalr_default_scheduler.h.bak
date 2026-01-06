@@ -2,16 +2,13 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-// ESP32 adaptation: FreeRTOS-based header
-
 #pragma once
 
 #include "../include/signalrclient/scheduler.h"
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
-#include "freertos/semphr.h"
+#include <thread>
+#include <mutex>
 #include <vector>
-#include <chrono>
+#include <condition_variable>
 
 namespace signalr
 {
@@ -28,19 +25,20 @@ namespace signalr
         void shutdown();
         ~thread();
     private:
+#pragma warning( push )
+#pragma warning( disable: 4625 5026 4626 5027 )
         struct internals
         {
             signalr_base_cb m_callback;
-            SemaphoreHandle_t m_callback_mutex;
-            SemaphoreHandle_t m_callback_sem;
+            std::mutex m_callback_lock;
+            std::condition_variable m_callback_cv;
             bool m_closed;
             bool m_busy;
         };
+#pragma warning( pop )
 
         std::shared_ptr<internals> m_internals;
-        TaskHandle_t m_task_handle;
-        
-        static void task_function(void* param);
+        std::thread m_thread;
     };
 
     struct signalr_default_scheduler : scheduler
@@ -58,20 +56,20 @@ namespace signalr
     private:
         void run();
 
+#pragma warning( push )
+#pragma warning( disable: 4625 5026 4626 5027 )
         struct internals
         {
             std::vector<std::pair<signalr_base_cb, std::chrono::time_point<std::chrono::steady_clock, std::chrono::nanoseconds>>> m_callbacks;
-            SemaphoreHandle_t m_callback_mutex;
-            SemaphoreHandle_t m_callback_sem;
+            std::mutex m_callback_lock;
+            std::condition_variable m_callback_cv;
             bool m_closed;
         };
+#pragma warning( pop )
 
         std::shared_ptr<internals> m_internals;
-        TaskHandle_t m_scheduler_task_handle;
 
         void close();
-        
-        static void scheduler_task_function(void* param);
     };
 
     void timer_internal(const std::shared_ptr<scheduler>& scheduler, std::function<bool(std::chrono::milliseconds)> func, std::chrono::milliseconds duration);
