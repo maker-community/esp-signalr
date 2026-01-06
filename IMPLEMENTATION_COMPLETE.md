@@ -125,9 +125,9 @@ git clone https://github.com/maker-community/esp-signalr.git verdure__esp-signal
 ### Basic Usage
 
 ```cpp
-#include "signalrclient/hub_connection_builder.h"
-#include "signalrclient/esp32_websocket_client.h"
-#include "signalrclient/esp32_http_client.h"
+#include "hub_connection_builder.h"
+#include "esp32_websocket_client.h"
+#include "esp32_http_client.h"
 
 // Create connection
 auto connection = signalr::hub_connection_builder::create("http://server/hub")
