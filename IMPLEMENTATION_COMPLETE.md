@@ -103,20 +103,15 @@ esp-signalr/
     │       ├── signalr_default_scheduler.cpp/h
     │       └── [20+ SignalR protocol implementations]
     │
-    ├── third_party_code/
-    │   └── cpprestsdk/
-    │       ├── uri.cpp
-    │       ├── uri_builder.cpp
-    │       └── [related headers]
-    │
-    └── example/
-        ├── CMakeLists.txt
-        ├── README.md
-        ├── TEST_SERVER.md
-        └── main/
-            ├── CMakeLists.txt
-            └── signalr_example.cpp
+    └── third_party_code/
+        └── cpprestsdk/
+            ├── uri.cpp
+            ├── uri_builder.cpp
+            └── [related headers]
 ```
+
+**Note**: Example code has been moved to a separate repository:
+[esp-signalr-example](https://github.com/maker-community/esp-signalr-example)
 
 ## 🚀 Quick Start
 
@@ -179,10 +174,10 @@ CONFIG_COMPILER_CXX_EXCEPTIONS_EMG_POOL_SIZE=512
 → Review **IMPLEMENTATION_NOTES.md**
 
 ### For Testing
-→ Follow **example/TEST_SERVER.md**
+→ Follow [TEST_SERVER.md](https://github.com/maker-community/esp-signalr-example/blob/main/TEST_SERVER.md)
 
 ### For Reference
-→ Check **example/main/signalr_example.cpp**
+→ Check [signalr_example.cpp](https://github.com/maker-community/esp-signalr-example/blob/main/main/signalr_example.cpp)
 
 ## ✨ Key Features
 

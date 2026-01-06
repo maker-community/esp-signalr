@@ -19,9 +19,6 @@ sdkconfig.old
 dependencies/
 managed_components/**/build/
 
-# ESP-IDF specific
-/managed_components/verdure__esp-signalr/example/.config
-
 # Temporary files
 /tmp/
 *.tmp
