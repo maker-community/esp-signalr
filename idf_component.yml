@@ -25,3 +25,11 @@ files:
   exclude:
     - "example/**"
     - "examples/**"
+    - "**/*.bak"
+    - "**/*_original.*"
+    - "**/*.tmp"
+    - "**/*.swp"
+    - "**/*.swo"
+    - "extract_core_files.*"
+    - "IMPLEMENTATION_NOTES.md"
+    - "IMPLEMENTATION_COMPLETE.md"
