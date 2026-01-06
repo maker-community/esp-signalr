@@ -5,35 +5,36 @@ idf_component_register(
         "src/adapters/esp32_http_client.cpp"
         "src/json_adapter.cpp"
         
-        # SignalR core protocol (to be uncommented after extraction)
-        # "src/signalrclient/callback_manager.cpp"
-        # "src/signalrclient/cancellation_token.cpp"
-        # "src/signalrclient/cancellation_token_source.cpp"
-        # "src/signalrclient/connection_impl.cpp"
-        # "src/signalrclient/handshake_protocol.cpp"
-        # "src/signalrclient/hub_connection.cpp"
-        # "src/signalrclient/hub_connection_builder.cpp"
-        # "src/signalrclient/hub_connection_impl.cpp"
-        # "src/signalrclient/json_helpers.cpp"
-        # "src/signalrclient/json_hub_protocol.cpp"
-        # "src/signalrclient/logger.cpp"
-        # "src/signalrclient/negotiate.cpp"
-        # "src/signalrclient/signalr_client_config.cpp"
-        # "src/signalrclient/signalr_value.cpp"
-        # "src/signalrclient/trace_log_writer.cpp"
-        # "src/signalrclient/transport.cpp"
-        # "src/signalrclient/transport_factory.cpp"
-        # "src/signalrclient/url_builder.cpp"
-        # "src/signalrclient/websocket_transport.cpp"
-        # "src/signalrclient/signalr_default_scheduler.cpp"
+        # SignalR core protocol
+        "src/signalrclient/callback_manager.cpp"
+        "src/signalrclient/cancellation_token.cpp"
+        "src/signalrclient/cancellation_token_source.cpp"
+        "src/signalrclient/connection_impl.cpp"
+        "src/signalrclient/handshake_protocol.cpp"
+        "src/signalrclient/hub_connection.cpp"
+        "src/signalrclient/hub_connection_builder.cpp"
+        "src/signalrclient/hub_connection_impl.cpp"
+        "src/signalrclient/json_helpers.cpp"
+        "src/signalrclient/json_hub_protocol.cpp"
+        "src/signalrclient/logger.cpp"
+        "src/signalrclient/negotiate.cpp"
+        "src/signalrclient/signalr_client_config.cpp"
+        "src/signalrclient/signalr_value.cpp"
+        "src/signalrclient/trace_log_writer.cpp"
+        "src/signalrclient/transport.cpp"
+        "src/signalrclient/transport_factory.cpp"
+        "src/signalrclient/url_builder.cpp"
+        "src/signalrclient/websocket_transport.cpp"
+        "src/signalrclient/signalr_default_scheduler.cpp"
         
-        # URI utilities (to be uncommented after extraction)
-        # "third_party_code/cpprestsdk/uri.cpp"
-        # "third_party_code/cpprestsdk/uri_builder.cpp"
+        # URI utilities
+        "third_party_code/cpprestsdk/uri.cpp"
+        "third_party_code/cpprestsdk/uri_builder.cpp"
         
     INCLUDE_DIRS 
         "include"
         "third_party_code"
+        "src"
         
     REQUIRES 
         esp_websocket_client
