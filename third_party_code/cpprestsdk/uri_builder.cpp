@@ -13,7 +13,6 @@
 
 // Copied and modified slightly from https://github.com/microsoft/cpprestsdk/blob/fd6aa00c18a7fb8dbe957175078f02346775045a/Release/src/uri/uri_builder.cpp
 
-#include "../../src/signalrclient/stdafx.h"
 #include "uri_builder.h"
 #include <locale>
 #include <sstream>

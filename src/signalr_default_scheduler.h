@@ -6,12 +6,13 @@
 
 #pragma once
 
-#include "../include/signalrclient/scheduler.h"
+#include "scheduler.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
 #include <vector>
 #include <chrono>
+#include <memory>
 
 namespace signalr
 {

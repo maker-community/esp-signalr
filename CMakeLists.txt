@@ -36,13 +36,14 @@ idf_component_register(
         
     PRIV_INCLUDE_DIRS
         "third_party_code"
+        "third_party_code/cpprestsdk"
         "src"
         
     REQUIRES 
-        esp_websocket_client
         esp_http_client
         json
         freertos
+        espressif__esp_websocket_client
 )
 
 # Add compile definitions
@@ -56,4 +57,5 @@ target_compile_options(${COMPONENT_LIB} PRIVATE
     -std=c++11
     -Wno-unused-parameter
     -Wno-missing-field-initializers
+    -Wno-unknown-pragmas
 )

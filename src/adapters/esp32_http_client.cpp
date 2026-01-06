@@ -2,6 +2,7 @@
 #include "signalr_client_config.h"
 #include "esp_log.h"
 #include <cstring>
+#include <stdexcept>
 
 static const char* TAG = "ESP32_HTTP_CLIENT";
 
