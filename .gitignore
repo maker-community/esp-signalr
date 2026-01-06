@@ -1,0 +1,33 @@
+# Build artifacts
+build/
+sdkconfig
+sdkconfig.old
+*.swp
+*.swo
+*~
+
+# IDE files
+.vscode/
+.idea/
+*.iml
+
+# Backup files
+*.bak
+*_original.*
+
+# Dependency directories
+dependencies/
+managed_components/**/build/
+
+# ESP-IDF specific
+/managed_components/verdure__esp-signalr/example/.config
+
+# Temporary files
+/tmp/
+*.tmp
+
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
