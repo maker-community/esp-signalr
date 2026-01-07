@@ -6,6 +6,7 @@
 #include "logger.h"
 #include "signalr_exception.h"
 #include "base_uri.h"
+#include "esp_log.h"
 
 #pragma warning (push)
 #pragma warning (disable : 5204 4355)
@@ -73,19 +74,26 @@ namespace signalr
         // been started in which case we just stop the loop by not scheduling another receive task.
         websocket_client->receive([weak_transport, logger, receive_loop_task, weak_websocket_client](std::string message, std::exception_ptr exception)
             {
+                ESP_LOGI("WS_TRANSPORT", ">>> receive_loop callback ENTERED, message length: %zu <<<", message.length());
+                
                 auto transport = weak_transport.lock();
+                ESP_LOGI("WS_TRANSPORT", "receive_loop: got transport lock");
 
                 // transport can be null if a websocket transport specific test doesn't call and wait for stop and relies on the destructor, if that happens update the test to call and wait for stop.
                 // stop waits for the receive loop to complete so the transport should never be null
                 assert(transport != nullptr);
 
+                ESP_LOGI("WS_TRANSPORT", "receive_loop: Acquiring m_start_stop_lock...");
                 bool disconnected;
                 {
                     std::lock_guard<std::mutex> lock(transport->m_start_stop_lock);
+                    ESP_LOGI("WS_TRANSPORT", "receive_loop: Got m_start_stop_lock");
                     disconnected = transport->m_disconnected;
                 }
+                ESP_LOGI("WS_TRANSPORT", "receive_loop: Released m_start_stop_lock, disconnected=%d", disconnected);
                 if (disconnected)
                 {
+                    ESP_LOGW("WS_TRANSPORT", "receive_loop: Already disconnected, returning");
                     // stop has been called, tell it the receive loop is done and return
                     receive_loop_task->cancel();
                     return;
@@ -93,6 +101,7 @@ namespace signalr
 
                 if (exception != nullptr)
                 {
+                    ESP_LOGE("WS_TRANSPORT", "receive_loop: Exception received!");
                     try
                     {
                         std::rethrow_exception(exception);
@@ -122,69 +131,69 @@ namespace signalr
                     }
                     if (disconnected)
                     {
-                        // stop has been called, tell it the receive loop is done and return
-                        receive_loop_task->cancel();
-                        return;
-                    }
+                    ESP_LOGW("WS_TRANSPORT", "receive error: connection already stopped, ignoring");
+                    // stop has been called, tell it the receive loop is done and return
                     receive_loop_task->cancel();
+                    return;
+                }
+                ESP_LOGE("WS_TRANSPORT", "receive ERROR: calling m_close_callback to stop connection!");
+                std::promise<void> promise;
+                auto client = weak_websocket_client.lock();
+                if (!client)
+                {
+                    // this should not be hit
+                    // we wait for the receive loop to complete before completing stop (which will then destruct the transport and client)
+                    logger.log(trace_level::critical,
+                        "[websocket transport] websocket client has been destructed before the receive loop completes, this is a bug");
+                    assert(client != nullptr);
+                }
 
-                    std::promise<void> promise;
-                    auto client = weak_websocket_client.lock();
-                    if (!client)
+                // because transport.stop won't be called we need to stop the underlying client and invoke the transports close callback
+                client->stop([&promise](std::exception_ptr exception)
+                {
+                    if (exception != nullptr)
                     {
-                        // this should not be hit
-                        // we wait for the receive loop to complete before completing stop (which will then destruct the transport and client)
-                        logger.log(trace_level::critical,
-                            "[websocket transport] websocket client has been destructed before the receive loop completes, this is a bug");
-                        assert(client != nullptr);
+                        promise.set_exception(exception);
                     }
-
-                    // because transport.stop won't be called we need to stop the underlying client and invoke the transports close callback
-                    client->stop([&promise](std::exception_ptr exception)
+                    else
                     {
-                        if (exception != nullptr)
-                        {
-                            promise.set_exception(exception);
-                        }
-                        else
-                        {
-                            promise.set_value();
-                        }
-                    });
-
-                    try
-                    {
-                        promise.get_future().get();
+                        promise.set_value();
                     }
-                    // We prefer the outer exception bubbling up to the user
-                    // REVIEW: log here?
-                    catch (...) {}
+                });
 
-                    transport->m_close_callback(exception);
+                try
+                {
+                    promise.get_future().get();
+                }
+                // We prefer the outer exception bubbling up to the user
+                // REVIEW: log here?
+                catch (...) {}
 
+                logger.log(trace_level::error, "[websocket transport] calling m_close_callback to trigger connection stop");
                     return;
                 }
 
-                logger.log(trace_level::info, 
-                    std::string("[websocket transport] receive_loop callback: received message, calling process_response_callback. Message length: ")
-                    .append(std::to_string(message.length())));
+                ESP_LOGI("WS_TRANSPORT", "receive_loop: received message %zu bytes, calling process_response_callback", message.length());
                     
                 transport->m_process_response_callback(message, nullptr);
                 
-                logger.log(trace_level::info, "[websocket transport] receive_loop callback: process_response_callback returned, scheduling next receive");
+                ESP_LOGI("WS_TRANSPORT", "receive_loop: process_response_callback returned");
 
                 {
                     std::lock_guard<std::mutex> lock(transport->m_start_stop_lock);
                     disconnected = transport->m_disconnected;
+                    ESP_LOGI("WS_TRANSPORT", "receive_loop: m_disconnected = %s", disconnected ? "TRUE" : "FALSE");
                 }
 
                 if (!disconnected)
                 {
+                    ESP_LOGI("WS_TRANSPORT", "receive_loop: calling receive_loop() again");
                     assert(!receive_loop_task->is_canceled());
                     transport->receive_loop();
                 }
                 else
                 {
+                    ESP_LOGW("WS_TRANSPORT", "receive_loop: STOPPED because m_disconnected=true!");
                     receive_loop_task->cancel();
                 }
             });

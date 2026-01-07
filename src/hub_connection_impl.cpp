@@ -13,6 +13,9 @@
 #include "handshake_protocol.h"
 #include "websocket_client.h"
 #include "signalr_default_scheduler.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "esp_log.h"
 
 namespace signalr
 {
@@ -149,36 +152,76 @@ namespace signalr
 
                 auto handle_handshake = [weak_connection, handshake_request_done, handshake_request_lock, callback](std::exception_ptr exception, bool fromSend)
                 {
+                    ESP_LOGI("HUB_CONN", ">>> handle_handshake ENTERED, fromSend=%d <<<", fromSend);
                     assert(fromSend ? *handshake_request_done : true);
 
                     auto connection = weak_connection.lock();
                     if (!connection)
                     {
+                        ESP_LOGE("HUB_CONN", "handle_handshake: connection destructed!");
                         // The connection has been destructed
                         callback(std::make_exception_ptr(signalr_exception("the hub connection has been deconstructed")));
                         return;
                     }
 
                     {
+                        ESP_LOGI("HUB_CONN", "handle_handshake: Acquiring handshake_request_lock...");
                         std::lock_guard<std::mutex> lock(*handshake_request_lock);
+                        ESP_LOGI("HUB_CONN", "handle_handshake: Got lock, checking handshake_request_done...");
                         // connection.send will be waiting on the handshake task which has been set by the caller already
                         if (!fromSend && *handshake_request_done == true)
                         {
+                            ESP_LOGI("HUB_CONN", "handle_handshake: Already done, returning");
                             return;
                         }
                         *handshake_request_done = true;
+                        ESP_LOGI("HUB_CONN", "handle_handshake: Set handshake_request_done=true");
                     }
 
+                    ESP_LOGI("HUB_CONN", "handle_handshake: Lock released, proceeding to try block...");
                     try
                     {
                         if (exception == nullptr)
                         {
-                            connection->m_handshakeTask->get();
-                            callback(nullptr);
+                            ESP_LOGI("HUB_CONN", "handle_handshake: No exception, waiting for handshake completion...");
+                            // CRITICAL FIX: Don't block on m_handshakeTask->get() if we're on
+                            // the callback processor task! This would deadlock because the
+                            // handshake response needs to be processed by the same task.
+                            //
+                            // Solution: Poll with yield instead of blocking wait
+                            const int MAX_WAIT_MS = 30000; // 30 seconds timeout
+                            const int POLL_INTERVAL_MS = 10;
+                            int waited_ms = 0;
+                            
+                            ESP_LOGI("HUB_CONN", "handle_handshake: Starting poll loop for handshake completion...");
+                            while (!connection->m_handshakeTask->is_set() && waited_ms < MAX_WAIT_MS)
+                            {
+                                vTaskDelay(pdMS_TO_TICKS(POLL_INTERVAL_MS));
+                                waited_ms += POLL_INTERVAL_MS;
+                                if (waited_ms % 1000 == 0) {
+                                    ESP_LOGI("HUB_CONN", "handle_handshake: Still waiting... %d ms elapsed", waited_ms);
+                                }
+                            }
+                            
+                            if (!connection->m_handshakeTask->is_set())
+                            {
+                                ESP_LOGE("HUB_CONN", "handle_handshake: TIMEOUT after %d ms!", waited_ms);
+                                exception = std::make_exception_ptr(signalr_exception("handshake timeout"));
+                            }
+                            else
+                            {
+                                ESP_LOGI("HUB_CONN", "handle_handshake: Handshake completed! Calling get() (should not block)...");
+                                // Now it's safe to call get() since we know it won't block
+                                connection->m_handshakeTask->get();
+                                ESP_LOGI("HUB_CONN", "handle_handshake: get() returned, calling callback(nullptr)...");
+                                callback(nullptr);
+                                ESP_LOGI("HUB_CONN", "handle_handshake: callback returned!");
+                            }
                         }
                     }
                     catch (...)
                     {
+                        ESP_LOGE("HUB_CONN", "handle_handshake: Exception caught in try block!");
                         exception = std::current_exception();
                     }
 
@@ -323,18 +366,24 @@ namespace signalr
 
     void hub_connection_impl::process_message(std::string&& response)
     {
+        ESP_LOGI("HUB_CONN", ">>> process_message CALLED, message length: %d <<<", response.length());
+        ESP_LOGI("HUB_CONN", "process_message: message content: %s", response.c_str());
+        
         try
         {
             if (!m_handshakeReceived)
             {
+                ESP_LOGI("HUB_CONN", "process_message: Handshake NOT received yet, parsing handshake...");
                 signalr::value handshake;
                 std::tie(response, handshake) = handshake::parse_handshake(response);
+                ESP_LOGI("HUB_CONN", "process_message: Handshake parsed");
 
                 auto& obj = handshake.as_map();
                 auto found = obj.find("error");
                 if (found != obj.end())
                 {
                     auto& error = found->second.as_string();
+                    ESP_LOGE("HUB_CONN", "process_message: Handshake error: %s", error.c_str());
                     if (m_logger.is_enabled(trace_level::error))
                     {
                         m_logger.log(trace_level::error, std::string("handshake error: ")
@@ -348,20 +397,25 @@ namespace signalr
                     found = obj.find("type");
                     if (found != obj.end())
                     {
+                        ESP_LOGE("HUB_CONN", "process_message: Unexpected message during handshake");
                         m_handshakeTask->set(std::make_exception_ptr(signalr_exception(std::string("Received unexpected message while waiting for the handshake response."))));
                         return;
                     }
 
+                    ESP_LOGI("HUB_CONN", "process_message: Handshake successful! Setting m_handshakeTask...");
                     m_handshakeReceived = true;
                     m_handshakeTask->set();
+                    ESP_LOGI("HUB_CONN", "process_message: m_handshakeTask->set() called!");
 
                     if (response.size() == 0)
                     {
+                        ESP_LOGI("HUB_CONN", "process_message: No additional data after handshake, returning");
                         return;
                     }
                 }
             }
 
+            ESP_LOGI("HUB_CONN", "process_message: Resetting server timeout...");
             reset_server_timeout();
             auto messages = m_protocol->parse_messages(response);
 

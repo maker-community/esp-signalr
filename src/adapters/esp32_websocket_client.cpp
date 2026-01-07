@@ -87,6 +87,9 @@ void esp32_websocket_client::start(const std::string& url, std::function<void(st
     ws_cfg.uri = url.c_str();
     ws_cfg.buffer_size = WEBSOCKET_BUFFER_SIZE;
     ws_cfg.task_stack = WEBSOCKET_TASK_STACK_SIZE;
+    // Set network timeout to prevent premature disconnection
+    // This should be longer than the SignalR server_timeout to allow SignalR-level timeout handling
+    ws_cfg.network_timeout_ms = 120000;  // 120 seconds (2x the SignalR server_timeout of 60s)
 
     m_client = esp_websocket_client_init(&ws_cfg);
     if (!m_client) {
@@ -192,24 +195,31 @@ void esp32_websocket_client::send(const std::string& payload, transfer_format tr
  * Lock ordering: queue_mutex -> callback_mutex (must be consistent everywhere)
  */
 void esp32_websocket_client::receive(std::function<void(const std::string&, std::exception_ptr)> callback) {
-    ESP_LOGI(TAG, "receive() called");
+    ESP_LOGI(TAG, ">>> receive() CALLED from task: %s <<<", pcTaskGetName(NULL));
     
     bool has_message = false;
+    size_t queue_size = 0;
     {
+        ESP_LOGI(TAG, "receive(): Acquiring queue_mutex...");
         std::lock_guard<std::mutex> queue_lock(m_queue_mutex);
+        ESP_LOGI(TAG, "receive(): Got queue_mutex, acquiring callback_mutex...");
         has_message = !m_message_queue.empty();
+        queue_size = m_message_queue.size();
         
         // Always save callback - callback processor will handle delivery
         std::lock_guard<std::mutex> lock(m_callback_mutex);
+        ESP_LOGI(TAG, "receive(): Got callback_mutex, saving callback");
         m_pending_receive_callback = callback;
     }
+    ESP_LOGI(TAG, "receive(): Locks released");
     
     if (has_message) {
-        ESP_LOGI(TAG, "receive(): Message available, signaling callback processor");
+        ESP_LOGI(TAG, "receive(): Message available (queue size: %zu), signaling callback processor", queue_size);
         schedule_callback_delivery();
     } else {
-        ESP_LOGI(TAG, "receive(): No message available, callback saved, waiting...");
+        ESP_LOGI(TAG, "receive(): No message available (queue empty), callback saved, waiting...");
     }
+    ESP_LOGI(TAG, "<<< receive() RETURNING >>>");
 }
 
 /**
@@ -232,12 +242,12 @@ void esp32_websocket_client::try_deliver_message() {
         std::lock_guard<std::mutex> cb_lock(m_callback_mutex);
         
         if (!m_pending_receive_callback) {
-            ESP_LOGI(TAG, "try_deliver_message: No pending callback");
+            ESP_LOGW(TAG, "try_deliver_message: No pending callback, queue size: %d", m_message_queue.size());
             return; // No pending callback, message stays in queue
         }
         
         if (m_message_queue.empty()) {
-            ESP_LOGI(TAG, "try_deliver_message: Queue is empty");
+            ESP_LOGW(TAG, "try_deliver_message: Queue is empty but callback is pending");
             return; // No message to deliver
         }
         
@@ -245,14 +255,24 @@ void esp32_websocket_client::try_deliver_message() {
         m_message_queue.pop();
         callback = m_pending_receive_callback;
         m_pending_receive_callback = nullptr;
+        ESP_LOGI(TAG, "try_deliver_message: Got message (%d bytes), remaining queue: %d", message.length(), m_message_queue.size());
     }
     
     // Call callback OUTSIDE the lock to avoid potential deadlock with SignalR
-    ESP_LOGI(TAG, "try_deliver_message: Delivering message to callback (%d bytes)", message.length());
+    ESP_LOGI(TAG, "try_deliver_message: Delivering message to callback (%d bytes): %s", message.length(), message.c_str());
+    ESP_LOGI(TAG, "try_deliver_message: >>> CALLING callback() directly - WARNING: callback might block! >>>");
+    
+    // CRITICAL: SignalR's receive callback (websocket_transport::receive_loop) calls
+    // m_process_response_callback which eventually reaches process_message().
+    // During handshake, this might call m_handshakeTask->get() which blocks!
+    // If we're on the callback processor task, this creates a deadlock.
+    //
+    // WORKAROUND: Just call it and see what happens. The real fix needs
+    // architecture changes to make all callbacks async.
     
     try {
         callback(message, nullptr);
-        ESP_LOGI(TAG, "try_deliver_message: Callback returned successfully");
+        ESP_LOGI(TAG, "try_deliver_message: <<< CALLBACK RETURNED - This should happen immediately! <<<");
     } catch (const std::exception& e) {
         ESP_LOGE(TAG, "try_deliver_message: Callback threw exception: %s", e.what());
     } catch (...) {
@@ -345,6 +365,7 @@ void esp32_websocket_client::handle_data(const char* data, int data_len) {
             std::lock_guard<std::mutex> lock(m_queue_mutex);
             if (m_message_queue.size() < MAX_MESSAGE_QUEUE_SIZE) {
                 m_message_queue.push(message);
+                ESP_LOGI(TAG, "handle_data: Message added to queue, new size: %zu", m_message_queue.size());
             } else {
                 ESP_LOGW(TAG, "Message queue full (%zu messages), dropping oldest message", MAX_MESSAGE_QUEUE_SIZE);
                 m_message_queue.pop();  // Drop oldest
@@ -352,6 +373,7 @@ void esp32_websocket_client::handle_data(const char* data, int data_len) {
             }
         }
         
+        ESP_LOGI(TAG, "handle_data: Calling schedule_callback_delivery()");
         // Signal callback processor task to deliver message
         // DON'T call try_deliver_message() directly - it would run SignalR
         // callbacks on the WebSocket event handler thread with limited stack
@@ -396,6 +418,7 @@ void esp32_websocket_client::callback_processor_task(void* param) {
     ESP_LOGI(TAG, "Callback task initial stack high water mark: %u bytes", high_water_mark_start * sizeof(StackType_t));
 #endif
     
+    ESP_LOGI(TAG, "Callback processor: entering main loop");
     while (client->m_callback_task_running) {
         // Wait for signal that a message is ready
         if (xSemaphoreTake(client->m_callback_semaphore, pdMS_TO_TICKS(100)) == pdTRUE) {
@@ -408,6 +431,7 @@ void esp32_websocket_client::callback_processor_task(void* param) {
             const int MAX_IDLE_ROUNDS = 50; // 50 * 10ms = 500ms max idle
             
             while (client->m_callback_task_running && idle_rounds < MAX_IDLE_ROUNDS) {
+                ESP_LOGI(TAG, "Callback processor: Round %d, calling try_deliver_message", message_count + 1);
                 bool delivered = false;
                 bool has_messages = false;
                 bool has_callback = false;
@@ -508,8 +532,16 @@ void esp32_websocket_client::stop_callback_processor() {
 }
 
 void esp32_websocket_client::schedule_callback_delivery() {
+    ESP_LOGI(TAG, "schedule_callback_delivery called");
     if (m_callback_semaphore != nullptr) {
-        xSemaphoreGive(m_callback_semaphore);
+        BaseType_t result = xSemaphoreGive(m_callback_semaphore);
+        if (result == pdTRUE) {
+            ESP_LOGI(TAG, "schedule_callback_delivery: Semaphore given successfully");
+        } else {
+            ESP_LOGW(TAG, "schedule_callback_delivery: Failed to give semaphore (already given?)");
+        }
+    } else {
+        ESP_LOGE(TAG, "schedule_callback_delivery: m_callback_semaphore is NULL!");
     }
 }
 
