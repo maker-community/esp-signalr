@@ -166,7 +166,13 @@ namespace signalr
                     return;
                 }
 
+                logger.log(trace_level::info, 
+                    std::string("[websocket transport] receive_loop callback: received message, calling process_response_callback. Message length: ")
+                    .append(std::to_string(message.length())));
+                    
                 transport->m_process_response_callback(message, nullptr);
+                
+                logger.log(trace_level::info, "[websocket transport] receive_loop callback: process_response_callback returned, scheduling next receive");
 
                 {
                     std::lock_guard<std::mutex> lock(transport->m_start_stop_lock);

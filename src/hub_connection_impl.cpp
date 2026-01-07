@@ -183,6 +183,7 @@ namespace signalr
 
                     if (exception != nullptr)
                     {
+                        connection->m_logger.log(trace_level::warning, "handshake failed, stopping connection");
                         connection->m_connection->stop([callback, exception](std::exception_ptr)
                             {
                                 callback(exception);
@@ -190,6 +191,7 @@ namespace signalr
                     }
                     else
                     {
+                        connection->m_logger.log(trace_level::info, "handshake succeeded, starting keepalive");
                         connection->start_keepalive();
                     }
                 };
@@ -550,10 +552,7 @@ namespace signalr
 
     void hub_connection_impl::start_keepalive()
     {
-        if (m_logger.is_enabled(trace_level::debug))
-        {
-            m_logger.log(trace_level::debug, "starting keep alive timer.");
-        }
+        m_logger.log(trace_level::info, "starting keep alive timer.");
 
         auto send_ping = [](std::shared_ptr<hub_connection_impl> connection)
         {
@@ -642,10 +641,7 @@ namespace signalr
 
                 if (timeNowmSeconds > connection->m_nextActivationSendPing.load())
                 {
-                    if (connection->m_logger.is_enabled(trace_level::debug))
-                    {
-                        connection->m_logger.log(trace_level::debug, "sending ping to server.");
-                    }
+                    connection->m_logger.log(trace_level::info, "sending ping to server.");
                     send_ping(connection);
                 }
 
