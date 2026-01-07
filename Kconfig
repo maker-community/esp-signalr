@@ -1,0 +1,84 @@
+menu "ESP32 SignalR Client Configuration"
+
+    config SIGNALR_WORKER_POOL_SIZE
+        int "Worker thread pool size"
+        default 2
+        range 1 5
+        help
+            Number of worker threads in the SignalR scheduler pool.
+            Smaller values save memory but may reduce concurrent callback handling.
+            Default: 2 (optimized for ESP32)
+            
+    config SIGNALR_WORKER_STACK_SIZE
+        int "Worker task stack size (bytes)"
+        default 3072
+        range 2048 8192
+        help
+            Stack size for each worker task in bytes.
+            Default: 3072 (3KB, optimized for ESP32)
+            
+    config SIGNALR_SCHEDULER_STACK_SIZE
+        int "Scheduler task stack size (bytes)"
+        default 6144
+        range 4096 16384
+        help
+            Stack size for the scheduler task in bytes.
+            Default: 6144 (6KB, optimized for ESP32)
+            
+    config SIGNALR_CALLBACK_STACK_SIZE
+        int "WebSocket callback task stack size (bytes)"
+        default 6144
+        range 4096 32768
+        help
+            Stack size for the WebSocket callback processing task.
+            Increase if you experience stack overflow in callbacks.
+            Default: 6144 (6KB, reduced from 32KB for memory efficiency)
+            
+    config SIGNALR_MAX_MESSAGE_SIZE
+        int "Maximum message size (bytes)"
+        default 4096
+        range 1024 16384
+        help
+            Maximum size of a single SignalR message.
+            Default: 4096 (4KB)
+            
+    config SIGNALR_CONNECTION_TIMEOUT_MS
+        int "Connection timeout (milliseconds)"
+        default 10000
+        range 5000 60000
+        help
+            Timeout for establishing WebSocket connection.
+            Default: 10000 (10 seconds)
+            
+    config SIGNALR_ENABLE_DETAILED_LOGS
+        bool "Enable detailed logging"
+        default n
+        help
+            Enable detailed debug logging for SignalR operations.
+            Useful for debugging but increases code size and runtime overhead.
+            
+    config SIGNALR_ENABLE_TRACE_LOG_WRITER
+        bool "Enable trace log writer (std::clog output)"
+        default n
+        help
+            Enable trace_log_writer which outputs to std::clog.
+            Disable to save ~1KB of code size.
+            Note: ESP32 logging via ESP_LOG is always available.
+            
+    config SIGNALR_SKIP_NEGOTIATION
+        bool "Skip negotiation phase (direct WebSocket)"
+        default n
+        help
+            Skip the HTTP negotiation phase and connect directly via WebSocket.
+            Only enable if your SignalR server supports this mode.
+            Saves memory and connection time.
+            
+    config SIGNALR_ENABLE_NEGOTIATION
+        bool "Enable HTTP negotiation support"
+        default y
+        help
+            Enable HTTP negotiation phase support.
+            Disable if you always use skip_negotiation mode.
+            Saves ~2KB by excluding negotiate.cpp and reducing HTTP client usage.
+
+endmenu

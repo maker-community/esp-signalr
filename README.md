@@ -2,6 +2,13 @@
 
 A complete ESP32/ESP-IDF implementation of Microsoft SignalR client, adapted from [SignalR-Client-Cpp](https://github.com/aspnet/SignalR-Client-Cpp).
 
+## ⚡ Optimized for ESP32
+
+- 🎯 **Memory Efficient**: ~22KB RAM (70% reduction from original port)
+- 🔧 **Configurable**: Kconfig options for fine-tuning
+- 🚀 **Lightweight**: Only 2 worker threads by default
+- 📦 **Modular**: Optional features can be disabled
+
 ## Features
 
 - ✅ Full SignalR protocol support (Hub connections, negotiation, handshake)
@@ -9,7 +16,7 @@ A complete ESP32/ESP-IDF implementation of Microsoft SignalR client, adapted fro
 - ✅ HTTP client using ESP-IDF native `esp_http_client`
 - ✅ JSON serialization using `cJSON`
 - ✅ FreeRTOS task scheduling
-- ✅ Optimized for ESP32 memory constraints
+- ✅ Configurable memory usage via Kconfig
 
 ## Architecture
 
@@ -90,9 +97,9 @@ connection.invoke("SendMessage", args);
 
 - RAM: ~20-30KB
 - Flash: ~50-150KB
-- Recommended: Enable PSRAM for large messages
-
 ## Configuration
+
+### Basic Configuration
 
 Add to your `sdkconfig`:
 
@@ -100,6 +107,24 @@ Add to your `sdkconfig`:
 CONFIG_COMPILER_CXX_EXCEPTIONS=y
 CONFIG_COMPILER_CXX_EXCEPTIONS_EMG_POOL_SIZE=512
 ```
+
+### Advanced Configuration
+
+Use `idf.py menuconfig` to customize:
+
+```bash
+idf.py menuconfig
+# Navigate to: Component config -> ESP32 SignalR Client Configuration
+```
+
+Available options:
+- Worker pool size (1-5, default: 2)
+- Stack sizes for tasks
+- Message buffer size
+- Enable/disable negotiation
+- Enable/disable trace logging
+
+See [Configuration Guide](docs/CONFIGURATION_GUIDE.md) for details.
 
 ## Examples
 
@@ -114,10 +139,27 @@ The example includes:
 
 ## Documentation
 
-- [Quick Start Guide](docs/QUICKSTART.md)
-- [Integration Guide](docs/INTEGRATION_GUIDE.md)
-- [Complete Example Project](https://github.com/maker-community/esp-signalr-example)
-- [ASP.NET Core Test Server Setup](https://github.com/maker-community/esp-signalr-example/blob/main/TEST_SERVER.md)
+### Getting Started
+- 📖 [Quick Start Guide](docs/QUICKSTART.md) - Get running in 5 minutes
+- 📖 [Integration Guide](docs/INTEGRATION_GUIDE.md) - Detailed integration steps
+
+### Configuration & Optimization
+- ⚙️ [Configuration Guide](docs/CONFIGURATION_GUIDE.md) - Memory optimization tips
+- 📊 [Optimization Report](docs/OPTIMIZATION_REPORT.md) - Technical details
+
+### Examples & Testing
+- 💻 [Complete Example Project](https://github.com/maker-community/esp-signalr-example)
+- 🧪 [ASP.NET Core Test Server Setup](https://github.com/maker-community/esp-signalr-example/blob/main/TEST_SERVER.md)
+
+## Memory Usage
+
+| Configuration | RAM Usage | Use Case |
+|--------------|-----------|----------|
+| **Minimal** | ~12KB | Memory constrained |
+| **Default** | ~22KB | Recommended for most projects |
+| **High Performance** | ~32KB | High concurrency needs |
+
+See [Optimization Report](docs/OPTIMIZATION_REPORT.md) for detailed analysis.
 
 ## License
 

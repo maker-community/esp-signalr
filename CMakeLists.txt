@@ -17,10 +17,8 @@ idf_component_register(
         "src/json_helpers.cpp"
         "src/json_hub_protocol.cpp"
         "src/logger.cpp"
-        "src/negotiate.cpp"
         "src/signalr_client_config.cpp"
         "src/signalr_value.cpp"
-        "src/trace_log_writer.cpp"
         "src/transport.cpp"
         "src/transport_factory.cpp"
         "src/url_builder.cpp"
@@ -46,10 +44,21 @@ idf_component_register(
         espressif__esp_websocket_client
 )
 
+# Conditionally add optional source files based on Kconfig
+if(CONFIG_SIGNALR_ENABLE_NEGOTIATION)
+    target_sources(${COMPONENT_LIB} PRIVATE "src/negotiate.cpp")
+endif()
+
+if(CONFIG_SIGNALR_ENABLE_TRACE_LOG_WRITER)
+    target_sources(${COMPONENT_LIB} PRIVATE "src/trace_log_writer.cpp")
+endif()
+
 # Add compile definitions
 target_compile_definitions(${COMPONENT_LIB} PUBLIC 
     VERDURE_ESP_SIGNALR
     NO_SIGNALRCLIENT_EXPORTS
+    # Note: USE_MSGPACK is NOT defined - MessagePack protocol support is disabled
+    # to reduce code size and memory usage. Only JSON protocol is supported.
 )
 
 # Configure C++ standard and options

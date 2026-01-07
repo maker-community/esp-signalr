@@ -12,12 +12,12 @@ static const char* TAG = "signalr_scheduler";
 
 // Configuration constants
 namespace {
-    constexpr uint32_t WORKER_TASK_STACK_SIZE = 4096;   // Stack size for worker tasks
-    constexpr uint32_t SCHEDULER_TASK_STACK_SIZE = 8192; // Stack size for scheduler task
+    constexpr uint32_t WORKER_TASK_STACK_SIZE = 3072;   // Stack size for worker tasks (optimized for ESP32)
+    constexpr uint32_t SCHEDULER_TASK_STACK_SIZE = 6144; // Stack size for scheduler task (optimized)
     constexpr UBaseType_t TASK_PRIORITY = 5;             // Priority for all SignalR tasks
     constexpr uint32_t SHUTDOWN_RETRY_COUNT = 100;       // Max retries when shutting down
     constexpr uint32_t SHUTDOWN_RETRY_DELAY_MS = 10;     // Delay between shutdown retries
-    constexpr size_t WORKER_THREAD_POOL_SIZE = 5;        // Number of worker threads
+    constexpr size_t WORKER_THREAD_POOL_SIZE = 2;        // Number of worker threads (reduced for ESP32)
 }
 
 namespace signalr

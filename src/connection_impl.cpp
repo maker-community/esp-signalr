@@ -5,9 +5,13 @@
 #include <algorithm>
 #include "constants.h"
 #include "connection_impl.h"
+#ifdef CONFIG_SIGNALR_ENABLE_NEGOTIATION
 #include "negotiate.h"
+#endif
 #include "url_builder.h"
+#ifdef CONFIG_SIGNALR_ENABLE_TRACE_LOG_WRITER
 #include "trace_log_writer.h"
+#endif
 #include "signalr_exception.h"
 #include "case_insensitive_comparison_utils.h"
 #include "completion_event.h"
@@ -20,8 +24,13 @@ namespace signalr
     std::shared_ptr<connection_impl> connection_impl::create(const std::string& url, trace_level trace_level, const std::shared_ptr<log_writer>& log_writer,
         std::function<std::shared_ptr<http_client>(const signalr_client_config&)> http_client_factory, std::function<std::shared_ptr<websocket_client>(const signalr_client_config&)> websocket_factory, const bool skip_negotiation)
     {
+#ifdef CONFIG_SIGNALR_ENABLE_TRACE_LOG_WRITER
+        auto default_log_writer = log_writer ? log_writer : std::make_shared<trace_log_writer>();
+#else
+        auto default_log_writer = log_writer;
+#endif
         return std::shared_ptr<connection_impl>(new connection_impl(url, trace_level,
-            log_writer ? log_writer : std::make_shared<trace_log_writer>(), http_client_factory, websocket_factory, skip_negotiation));
+            default_log_writer, http_client_factory, websocket_factory, skip_negotiation));
     }
 
     connection_impl::connection_impl(const std::string& url, trace_level trace_level, const std::shared_ptr<log_writer>& log_writer,

@@ -4,7 +4,9 @@
 
 #include "hub_connection_impl.h"
 #include "hub_exception.h"
+#ifdef CONFIG_SIGNALR_ENABLE_TRACE_LOG_WRITER
 #include "trace_log_writer.h"
+#endif
 #include "signalr_exception.h"
 #include "json_hub_protocol.h"
 #include "message_type.h"

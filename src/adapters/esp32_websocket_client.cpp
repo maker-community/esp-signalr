@@ -11,7 +11,7 @@ static const char* TAG = "ESP32_WS_CLIENT";
 namespace {
     constexpr size_t WEBSOCKET_BUFFER_SIZE = 4096;
     constexpr size_t WEBSOCKET_TASK_STACK_SIZE = 8192;
-    constexpr size_t CALLBACK_TASK_STACK_SIZE = 32768;  // Large stack for SignalR callbacks
+    constexpr size_t CALLBACK_TASK_STACK_SIZE = 6144;  // Reduced from 32KB to 6KB for ESP32 memory efficiency
     constexpr UBaseType_t CALLBACK_TASK_PRIORITY = 5;
     constexpr uint32_t CONNECTION_TIMEOUT_MS = 10000;
 }
