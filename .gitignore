@@ -36,3 +36,4 @@ extract_core_files.sh
 # Internal implementation docs (not for end users)
 IMPLEMENTATION_NOTES.md
 IMPLEMENTATION_COMPLETE.md
+/.vs

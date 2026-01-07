@@ -23,9 +23,50 @@ json_value::json_value(const json_value& other)
 
 json_value& json_value::operator=(const json_value& other) {
     if (this != &other) {
-        release();
-        if (other.m_node) {
-            deep_copy_from(other.m_node);
+        if (!m_owns_node && m_node && other.m_node) {
+            // We're a non-owning wrapper (child of an object/array)
+            // Need to replace the content of the cJSON node in-place
+            // This is tricky with cJSON - we need to preserve the node pointer
+            // but change its content
+            
+            char* string_backup = m_node->string;  // Preserve the key name
+            m_node->string = nullptr;  // Prevent cJSON_Delete from freeing it
+            
+            // Delete old content
+            if (m_node->child) {
+                cJSON_Delete(m_node->child);
+                m_node->child = nullptr;
+            }
+            if (m_node->valuestring) {
+                cJSON_free(m_node->valuestring);
+                m_node->valuestring = nullptr;
+            }
+            
+            // Copy new content
+            m_node->type = other.m_node->type;
+            m_node->valueint = other.m_node->valueint;
+            m_node->valuedouble = other.m_node->valuedouble;
+            
+            if (other.m_node->valuestring) {
+                size_t len = strlen(other.m_node->valuestring);
+                m_node->valuestring = (char*)cJSON_malloc(len + 1);
+                if (m_node->valuestring) {
+                    strcpy(m_node->valuestring, other.m_node->valuestring);
+                }
+            }
+            
+            if (other.m_node->child) {
+                m_node->child = cJSON_Duplicate(other.m_node->child, 1);
+            }
+            
+            // Restore the key name
+            m_node->string = string_backup;
+        } else {
+            // Normal case: we own the node, so we can replace it
+            release();
+            if (other.m_node) {
+                deep_copy_from(other.m_node);
+            }
         }
     }
     return *this;
@@ -186,7 +227,9 @@ json_value& json_value::operator[](const char* key) {
         cJSON_AddItemToObject(m_node, key, item);
     }
     
-    // Return a non-owning reference
+    // Create a non-owning wrapper for the child node
+    // Important: Use a local static per-call - this is still not perfect but better
+    // The real fix would require a proxy class
     static json_value temp;
     temp.release();
     temp.m_node = item;

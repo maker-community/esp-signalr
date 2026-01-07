@@ -1,5 +1,7 @@
 #pragma once
 
+#include "http_client.h"
+#include "cancellation_token.h"
 #include "esp_http_client.h"
 #include <string>
 #include <map>
@@ -12,44 +14,29 @@ namespace signalr {
 struct signalr_client_config;
 
 /**
- * HTTP response structure
- */
-struct http_response {
-    int status_code;
-    std::string body;
-    std::map<std::string, std::string> headers;
-};
-
-/**
  * ESP32 HTTP client adapter
  * Wraps ESP-IDF esp_http_client to provide SignalR-compatible interface
+ * Implements the http_client abstract interface
  */
-class esp32_http_client {
+class esp32_http_client : public http_client {
 public:
-    using response_callback = std::function<void(const http_response&)>;
-    using error_callback = std::function<void(const std::string&)>;
-
     explicit esp32_http_client(const signalr_client_config& config);
-    ~esp32_http_client();
+    virtual ~esp32_http_client();
 
-    // HTTP methods
-    void get(const std::string& url, response_callback callback);
-    void post(const std::string& url, const std::string& body, 
-             const std::map<std::string, std::string>& headers,
-             response_callback callback);
-
-    // Error handling
-    void set_error_callback(error_callback callback);
+    // Implement http_client interface
+    void send(const std::string& url, http_request& request,
+             std::function<void(const http_response&, std::exception_ptr)> callback, 
+             cancellation_token token) override;
 
 private:
     static esp_err_t http_event_handler(esp_http_client_event_t* evt);
     
     http_response perform_request(const std::string& url,
-                                  esp_http_client_method_t method,
-                                  const std::string& body = "",
-                                  const std::map<std::string, std::string>& headers = {});
+                                  http_method method,
+                                  const std::string& content,
+                                  const std::map<std::string, std::string>& headers,
+                                  std::chrono::seconds timeout);
 
-    error_callback m_error_callback;
     std::string m_response_buffer;
 };
 

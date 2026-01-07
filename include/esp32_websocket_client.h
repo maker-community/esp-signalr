@@ -1,5 +1,7 @@
 #pragma once
 
+#include "websocket_client.h"
+#include "transfer_format.h"
 #include "esp_websocket_client.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
@@ -15,30 +17,19 @@ struct signalr_client_config;
 /**
  * ESP32 WebSocket client adapter
  * Wraps ESP-IDF esp_websocket_client to provide SignalR-compatible interface
+ * Implements the websocket_client abstract interface
  */
-class esp32_websocket_client {
+class esp32_websocket_client : public websocket_client {
 public:
-    using message_callback = std::function<void(const std::string&)>;
-    using error_callback = std::function<void(const std::string&)>;
-    using connected_callback = std::function<void()>;
-    using disconnected_callback = std::function<void()>;
-
     explicit esp32_websocket_client(const signalr_client_config& config);
-    ~esp32_websocket_client();
+    virtual ~esp32_websocket_client();
 
-    // Connection management
-    void connect(const std::string& url);
-    void disconnect();
-    bool is_connected() const;
-
-    // Send data
-    void send(const std::string& message);
-
-    // Callback registration
-    void set_message_received_callback(message_callback callback);
-    void set_error_callback(error_callback callback);
-    void set_connected_callback(connected_callback callback);
-    void set_disconnected_callback(disconnected_callback callback);
+    // Implement websocket_client interface
+    void start(const std::string& url, std::function<void(std::exception_ptr)> callback) override;
+    void stop(std::function<void(std::exception_ptr)> callback) override;
+    void send(const std::string& payload, transfer_format transfer_format, 
+             std::function<void(std::exception_ptr)> callback) override;
+    void receive(std::function<void(const std::string&, std::exception_ptr)> callback) override;
 
 private:
     static void websocket_event_handler(void* handler_args, esp_event_base_t base, 
@@ -52,12 +43,10 @@ private:
     esp_websocket_client_handle_t m_client;
     EventGroupHandle_t m_event_group;
     
-    message_callback m_message_callback;
-    error_callback m_error_callback;
-    connected_callback m_connected_callback;
-    disconnected_callback m_disconnected_callback;
+    std::function<void(const std::string&, std::exception_ptr)> m_receive_callback;
 
     bool m_is_connected;
+    bool m_is_stopping;
     std::string m_receive_buffer;
     
     static constexpr int CONNECTED_BIT = BIT0;

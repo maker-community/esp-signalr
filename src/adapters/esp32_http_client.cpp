@@ -6,13 +6,6 @@
 
 static const char* TAG = "ESP32_HTTP_CLIENT";
 
-// Configuration constants
-namespace {
-    constexpr uint32_t HTTP_TIMEOUT_MS = 10000;          // HTTP request timeout
-    constexpr size_t HTTP_BUFFER_SIZE = 2048;            // HTTP receive buffer size
-    constexpr size_t HTTP_BUFFER_SIZE_TX = 2048;         // HTTP transmit buffer size
-}
-
 namespace signalr {
 
 esp32_http_client::esp32_http_client(const signalr_client_config& config) {
@@ -22,59 +15,38 @@ esp32_http_client::esp32_http_client(const signalr_client_config& config) {
 esp32_http_client::~esp32_http_client() {
 }
 
-void esp32_http_client::get(const std::string& url, response_callback callback) {
-    ESP_LOGI(TAG, "GET request to: %s", url.c_str());
+void esp32_http_client::send(const std::string& url, http_request& request,
+                            std::function<void(const http_response&, std::exception_ptr)> callback,
+                            cancellation_token token) {
+    ESP_LOGI(TAG, "HTTP %s request to: %s", 
+            request.method == http_method::GET ? "GET" : "POST", url.c_str());
     
     try {
-        http_response response = perform_request(url, HTTP_METHOD_GET);
-        if (callback) {
-            callback(response);
-        }
+        http_response response = perform_request(url, request.method, request.content, 
+                                                request.headers, request.timeout);
+        callback(response, nullptr);
     } catch (const std::exception& e) {
-        ESP_LOGE(TAG, "GET request failed: %s", e.what());
-        if (m_error_callback) {
-            m_error_callback(e.what());
-        }
+        ESP_LOGE(TAG, "HTTP request failed: %s", e.what());
+        callback(http_response(), std::make_exception_ptr(e));
     }
-}
-
-void esp32_http_client::post(const std::string& url, const std::string& body,
-                            const std::map<std::string, std::string>& headers,
-                            response_callback callback) {
-    ESP_LOGI(TAG, "POST request to: %s", url.c_str());
-    
-    try {
-        http_response response = perform_request(url, HTTP_METHOD_POST, body, headers);
-        if (callback) {
-            callback(response);
-        }
-    } catch (const std::exception& e) {
-        ESP_LOGE(TAG, "POST request failed: %s", e.what());
-        if (m_error_callback) {
-            m_error_callback(e.what());
-        }
-    }
-}
-
-void esp32_http_client::set_error_callback(error_callback callback) {
-    m_error_callback = callback;
 }
 
 http_response esp32_http_client::perform_request(const std::string& url,
-                                                 esp_http_client_method_t method,
-                                                 const std::string& body,
-                                                 const std::map<std::string, std::string>& headers) {
+                                                 http_method method,
+                                                 const std::string& content,
+                                                 const std::map<std::string, std::string>& headers,
+                                                 std::chrono::seconds timeout) {
     http_response response;
     m_response_buffer.clear();
 
     esp_http_client_config_t config = {};
     config.url = url.c_str();
-    config.method = method;
-    config.timeout_ms = HTTP_TIMEOUT_MS;
+    config.method = (method == http_method::GET) ? HTTP_METHOD_GET : HTTP_METHOD_POST;
+    config.timeout_ms = static_cast<int>(timeout.count() * 1000);
     config.event_handler = http_event_handler;
     config.user_data = &m_response_buffer;
-    config.buffer_size = HTTP_BUFFER_SIZE;
-    config.buffer_size_tx = HTTP_BUFFER_SIZE_TX;
+    config.buffer_size = 2048;
+    config.buffer_size_tx = 2048;
 
     esp_http_client_handle_t client = esp_http_client_init(&config);
     if (!client) {
@@ -87,8 +59,8 @@ http_response esp32_http_client::perform_request(const std::string& url,
     }
 
     // Set body for POST requests
-    if (method == HTTP_METHOD_POST && !body.empty()) {
-        esp_http_client_set_post_field(client, body.c_str(), body.length());
+    if (method == http_method::POST && !content.empty()) {
+        esp_http_client_set_post_field(client, content.c_str(), content.length());
     }
 
     // Perform request
@@ -96,7 +68,7 @@ http_response esp32_http_client::perform_request(const std::string& url,
     
     if (err == ESP_OK) {
         response.status_code = esp_http_client_get_status_code(client);
-        response.body = m_response_buffer;
+        response.content = m_response_buffer;
         
         ESP_LOGI(TAG, "HTTP Status: %d, Response length: %d", 
                 response.status_code, m_response_buffer.length());
