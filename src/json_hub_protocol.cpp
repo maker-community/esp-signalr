@@ -11,55 +11,65 @@ namespace signalr
 {
     std::string signalr::json_hub_protocol::write_message(const hub_message* hub_message) const
     {
-        json_value object = json_value::object();
+        try {
+            json_value object = json_value::object();
 
 #pragma warning (push)
 #pragma warning (disable: 4061)
-        switch (hub_message->message_type)
-        {
-        case message_type::invocation:
-        {
-            auto invocation = static_cast<invocation_message const*>(hub_message);
-            object["type"] = json_value::from_int(static_cast<int>(invocation->message_type));
-            if (!invocation->invocation_id.empty())
+            switch (hub_message->message_type)
             {
-                object["invocationId"] = json_value::from_string(invocation->invocation_id);
-            }
-            object["target"] = json_value::from_string(invocation->target);
-            object["arguments"] = createJson(invocation->arguments);
-            // TODO: streamIds
+            case message_type::invocation:
+            {
+                auto invocation = static_cast<invocation_message const*>(hub_message);
+                object["type"] = json_value::from_int(static_cast<int>(invocation->message_type));
+                if (!invocation->invocation_id.empty())
+                {
+                    object["invocationId"] = json_value::from_string(invocation->invocation_id);
+                }
+                object["target"] = json_value::from_string(invocation->target);
+                object["arguments"] = createJson(invocation->arguments);
+                // TODO: streamIds
 
-            break;
-        }
-        case message_type::completion:
-        {
-            auto completion = static_cast<completion_message const*>(hub_message);
-            object["type"] = json_value::from_int(static_cast<int>(completion->message_type));
-            object["invocationId"] = json_value::from_string(completion->invocation_id);
-            if (!completion->error.empty())
-            {
-                object["error"] = json_value::from_string(completion->error);
+                break;
             }
-            else if (completion->has_result)
+            case message_type::completion:
             {
-                object["result"] = createJson(completion->result);
+                auto completion = static_cast<completion_message const*>(hub_message);
+                object["type"] = json_value::from_int(static_cast<int>(completion->message_type));
+                object["invocationId"] = json_value::from_string(completion->invocation_id);
+                if (!completion->error.empty())
+                {
+                    object["error"] = json_value::from_string(completion->error);
+                }
+                else if (completion->has_result)
+                {
+                    object["result"] = createJson(completion->result);
+                }
+                break;
             }
-            break;
-        }
-        case message_type::ping:
-        {
-            auto ping = static_cast<ping_message const*>(hub_message);
-            object["type"] = json_value::from_int(static_cast<int>(ping->message_type));
-            break;
-        }
-        // TODO: other message types
-        default:
-            break;
-        }
+            case message_type::ping:
+            {
+                auto ping = static_cast<ping_message const*>(hub_message);
+                object["type"] = json_value::from_int(static_cast<int>(ping->message_type));
+                break;
+            }
+            // TODO: other message types
+            default:
+                break;
+            }
 #pragma warning (pop)
 
-        auto writer = getJsonWriter();
-        return writer.write(object) + record_separator;
+            auto writer = getJsonWriter();
+            std::string result = writer.write(object);
+            if (result == "null" || result.empty()) {
+                throw signalr_exception("Failed to serialize message to JSON");
+            }
+            return result + record_separator;
+        }
+        catch (const std::exception& e) {
+            // Re-throw with more context
+            throw signalr_exception(std::string("JSON serialization failed: ") + e.what());
+        }
     }
 
     std::vector<std::unique_ptr<hub_message>> json_hub_protocol::parse_messages(const std::string& message) const

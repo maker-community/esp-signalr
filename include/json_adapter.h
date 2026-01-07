@@ -8,6 +8,53 @@
 
 namespace signalr {
 
+// Forward declaration
+class json_value;
+
+/**
+ * Proxy class for json_value::operator[] to avoid static variable issues
+ * This allows safe assignment to object members without memory corruption
+ */
+class json_value_proxy {
+public:
+    json_value_proxy(cJSON* parent, cJSON* node);
+    
+    // Assignment operators - these modify the actual cJSON node
+    json_value_proxy& operator=(const json_value& value);
+    json_value_proxy& operator=(json_value&& value);
+    
+    // Conversion to json_value for reading
+    operator json_value() const;
+    
+    // Allow chained access (const and non-const versions)
+    json_value_proxy operator[](const char* key);
+    json_value_proxy operator[](const std::string& key);
+    json_value_proxy operator[](int index);
+    json_value_proxy operator[](const char* key) const;
+    json_value_proxy operator[](const std::string& key) const;
+    json_value_proxy operator[](int index) const;
+    
+    // Value extraction methods (delegate to underlying node)
+    std::string as_string() const;
+    int as_int() const;
+    unsigned int as_uint() const;
+    double as_double() const;
+    bool as_bool() const;
+    
+    // Type queries
+    bool is_null() const;
+    bool is_string() const;
+    bool is_array() const;
+    bool is_object() const;
+    
+    // Array/Object size
+    size_t size() const;
+    
+private:
+    cJSON* m_parent;  // Parent object/array node
+    cJSON* m_node;    // The actual child node
+};
+
 /**
  * JSON adapter wrapping cJSON to provide jsoncpp-compatible API
  * This allows SignalR core code to use cJSON with minimal changes
@@ -17,7 +64,9 @@ public:
     // Constructors
     json_value();
     json_value(const json_value& other);
+    json_value(json_value&& other) noexcept;  // Move constructor
     json_value& operator=(const json_value& other);
+    json_value& operator=(json_value&& other) noexcept;  // Move assignment
     ~json_value();
 
     // Type constructors
@@ -47,18 +96,19 @@ public:
     double as_double() const;
     bool as_bool() const;
 
-    // Object/Array operations
-    json_value& operator[](const char* key);
-    json_value& operator[](const std::string& key);
+    // Object/Array operations - return proxy for safe assignment
+    json_value_proxy operator[](const char* key);
+    json_value_proxy operator[](const std::string& key);
     const json_value operator[](const char* key) const;
     const json_value operator[](const std::string& key) const;
     
-    json_value& operator[](int index);
+    json_value_proxy operator[](int index);
     const json_value operator[](int index) const;
 
     // Array operations
     size_t size() const;
     void append(const json_value& value);
+    void append(json_value&& value);  // Move-semantic append to avoid copying large values
     
     // Object operations
     std::vector<std::string> get_member_names() const;
@@ -81,6 +131,7 @@ private:
 
     friend class json_reader;
     friend class json_writer;
+    friend class json_value_proxy;
 };
 
 /**

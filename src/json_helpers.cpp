@@ -5,6 +5,9 @@
 #include "json_helpers.h"
 #include <cmath>
 #include <stdint.h>
+#include "esp_log.h"
+
+static const char* JSON_HELPERS_TAG = "JSON_HELPERS";
 
 namespace signalr
 {
@@ -155,14 +158,24 @@ namespace signalr
             return json_value::from_double(v.as_double());
         }
         case signalr::value_type::string:
-            return json_value::from_string(v.as_string());
+        {
+            const auto& str = v.as_string();
+            // Check string length to prevent memory issues with very large strings
+            // Max recommended size: 64KB for JSON strings
+            if (str.length() > 65536) {
+                ESP_LOGE(JSON_HELPERS_TAG, "String too large for JSON: %d bytes (max 64KB)", str.length());
+                throw std::runtime_error("String too large: " + std::to_string(str.length()) + " bytes (max 64KB)");
+            }
+            return json_value::from_string(str);
+        }
         case signalr::value_type::array:
         {
             const auto& array = v.as_array();
             json_value vec = json_value::array();
             for (auto& val : array)
             {
-                vec.append(createJson(val));
+                // Use move-semantic append to avoid copying large values (like base64 strings)
+                vec.append(std::move(createJson(val)));
             }
             return vec;
         }

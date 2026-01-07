@@ -476,14 +476,18 @@ namespace signalr
     void hub_connection_impl::invoke_hub_method(const std::string& method_name, const std::vector<signalr::value>& arguments,
         const std::string& callback_id, std::function<void()> set_completion, std::function<void(const std::exception_ptr)> set_exception) noexcept
     {
+        m_logger.log(trace_level::info, std::string("invoke_hub_method: method=").append(method_name).append(", args_count=").append(std::to_string(arguments.size())));
         try
         {
             invocation_message invocation(callback_id, method_name, arguments);
+            m_logger.log(trace_level::info, "invoke_hub_method: calling write_message...");
             auto message = m_protocol->write_message(&invocation);
+            m_logger.log(trace_level::info, std::string("invoke_hub_method: message serialized, length=").append(std::to_string(message.length())));
 
             // weak_ptr prevents a circular dependency leading to memory leak and other problems
             auto weak_hub_connection = std::weak_ptr<hub_connection_impl>(shared_from_this());
 
+            m_logger.log(trace_level::info, "invoke_hub_method: calling m_connection->send()...");
             m_connection->send(message, m_protocol->transfer_format(), [set_completion, set_exception, weak_hub_connection, callback_id](std::exception_ptr exception)
                 {
                     if (exception)
@@ -509,6 +513,7 @@ namespace signalr
         }
         catch (const std::exception& e)
         {
+            m_logger.log(trace_level::error, std::string("invoke_hub_method: EXCEPTION CAUGHT: ").append(e.what()));
             m_callback_manager.remove_callback(callback_id);
             if (m_logger.is_enabled(trace_level::warning))
             {
