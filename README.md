@@ -114,8 +114,8 @@ The example includes:
 
 ## Documentation
 
-- [Quick Start Guide](QUICKSTART.md)
-- [Integration Guide](INTEGRATION_GUIDE.md)
+- [Quick Start Guide](docs/QUICKSTART.md)
+- [Integration Guide](docs/INTEGRATION_GUIDE.md)
 - [Complete Example Project](https://github.com/maker-community/esp-signalr-example)
 - [ASP.NET Core Test Server Setup](https://github.com/maker-community/esp-signalr-example/blob/main/TEST_SERVER.md)
 

@@ -1,8 +1,9 @@
+name: verdure/esp-signalr
 version: "1.0.0"
 description: "ESP32 SignalR Client Library - Adapted from Microsoft SignalR-Client-Cpp"
 url: "https://github.com/maker-community/esp-signalr"
 repository: "https://github.com/maker-community/esp-signalr.git"
-documentation: "https://github.com/maker-community/esp-signalr/blob/main/README.md"
+documentation: "https://github.com/maker-community/esp-signalr/blob/main/docs/QUICKSTART.md"
 
 examples:
   - path: "https://github.com/maker-community/esp-signalr-example"
@@ -31,5 +32,6 @@ files:
     - "**/*.swp"
     - "**/*.swo"
     - "extract_core_files.*"
-    - "IMPLEMENTATION_NOTES.md"
-    - "IMPLEMENTATION_COMPLETE.md"
+    - "docs/internal/**"
+    - ".vs/**"
+    - ".vscode/**"

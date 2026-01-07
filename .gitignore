@@ -8,6 +8,7 @@ sdkconfig.old
 
 # IDE files
 .vscode/
+.vs/
 .idea/
 *.iml
 
@@ -28,12 +29,8 @@ managed_components/**/build/
 
 # Windows
 Thumbs.db
+desktop.ini
 
 # Development scripts (not needed in published component)
 extract_core_files.ps1
 extract_core_files.sh
-
-# Internal implementation docs (not for end users)
-IMPLEMENTATION_NOTES.md
-IMPLEMENTATION_COMPLETE.md
-/.vs

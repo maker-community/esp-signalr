@@ -6,7 +6,6 @@
 #include "hub_connection_builder.h"
 #include <stdexcept>
 #include "json_hub_protocol.h"
-#include "messagepack_hub_protocol.h"
 
 namespace signalr
 {

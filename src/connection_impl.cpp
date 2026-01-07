@@ -10,12 +10,10 @@
 #include "url_builder.h"
 #include "trace_log_writer.h"
 #include "signalr_exception.h"
-#include "default_http_client.h"
 #include "case_insensitive_comparison_utils.h"
 #include "completion_event.h"
 #include <assert.h>
 #include "websocket_client.h"
-#include "default_websocket_client.h"
 #include "signalr_default_scheduler.h"
 
 namespace signalr
