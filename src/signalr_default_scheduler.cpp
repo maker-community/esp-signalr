@@ -4,7 +4,6 @@
 
 // ESP32 adaptation: FreeRTOS-based implementation
 
-#include "stdafx.h"
 #include "signalr_default_scheduler.h"
 #include "esp_log.h"
 #include <assert.h>

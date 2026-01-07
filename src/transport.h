@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include <functional>
 #include "transport_type.h"
 #include "transfer_format.h"
 #include "logger.h"

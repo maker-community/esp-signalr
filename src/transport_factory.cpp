@@ -2,7 +2,6 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-#include "stdafx.h"
 #include "transport_factory.h"
 #include "websocket_transport.h"
 #include "websocket_client.h"

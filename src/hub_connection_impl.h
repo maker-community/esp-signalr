@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include <functional>
 #include <unordered_map>
 #include "callback_manager.h"
 #include "case_insensitive_comparison_utils.h"

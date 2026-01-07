@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include <functional>
 #include <memory>
 #include "signalr_client_config.h"
 #include "transport_type.h"

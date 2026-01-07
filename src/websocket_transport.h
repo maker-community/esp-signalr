@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include <functional>
 #include "transport.h"
 #include "logger.h"
 #include "websocket_client.h"

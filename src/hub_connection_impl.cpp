@@ -2,7 +2,6 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-#include "stdafx.h"
 #include "hub_connection_impl.h"
 #include "hub_exception.h"
 #include "trace_log_writer.h"

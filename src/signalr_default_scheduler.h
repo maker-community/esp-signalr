@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <functional>
 #include "scheduler.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"

@@ -2,7 +2,6 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-#include "stdafx.h"
 #include "signalr_client_config.h"
 #include "signalr_default_scheduler.h"
 #include <stdexcept>
