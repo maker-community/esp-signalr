@@ -11,7 +11,7 @@ static const char* TAG = "ESP32_WS_CLIENT";
 namespace {
     constexpr size_t WEBSOCKET_BUFFER_SIZE = 4096;
     constexpr size_t WEBSOCKET_TASK_STACK_SIZE = 8192;
-    constexpr size_t CALLBACK_TASK_STACK_SIZE = 16384;  // Large stack for SignalR callbacks
+    constexpr size_t CALLBACK_TASK_STACK_SIZE = 32768;  // Large stack for SignalR callbacks
     constexpr UBaseType_t CALLBACK_TASK_PRIORITY = 5;
     constexpr uint32_t CONNECTION_TIMEOUT_MS = 10000;
 }
@@ -177,31 +177,30 @@ void esp32_websocket_client::send(const std::string& payload, transfer_format tr
  * calls receive() again for the next message (recursive loop).
  * 
  * Implementation:
- * 1. If there's already a message in the queue, deliver it immediately
- * 2. Otherwise, save the callback and wait for a message to arrive
+ * Always save the callback and let the callback processor handle delivery.
+ * This avoids deep recursion when receive() is called from within a callback.
  * 
  * Lock ordering: queue_mutex -> callback_mutex (must be consistent everywhere)
  */
 void esp32_websocket_client::receive(std::function<void(const std::string&, std::exception_ptr)> callback) {
     ESP_LOGI(TAG, "receive() called");
     
-    // Check if there's already a message available, use consistent lock order
+    bool has_message = false;
     {
         std::lock_guard<std::mutex> queue_lock(m_queue_mutex);
-        if (!m_message_queue.empty()) {
-            std::string message = m_message_queue.front();
-            m_message_queue.pop();
-            ESP_LOGI(TAG, "receive(): Delivering queued message immediately (%d bytes)", message.length());
-            callback(message, nullptr);
-            return;
-        }
+        has_message = !m_message_queue.empty();
         
-        // No message available, save callback for later (still holding queue_lock)
+        // Always save callback - callback processor will handle delivery
         std::lock_guard<std::mutex> lock(m_callback_mutex);
         m_pending_receive_callback = callback;
     }
     
-    ESP_LOGI(TAG, "receive(): No message available, callback saved, waiting...");
+    if (has_message) {
+        ESP_LOGI(TAG, "receive(): Message available, signaling callback processor");
+        schedule_callback_delivery();
+    } else {
+        ESP_LOGI(TAG, "receive(): No message available, callback saved, waiting...");
+    }
 }
 
 /**
@@ -380,21 +379,54 @@ void esp32_websocket_client::callback_processor_task(void* param) {
     while (client->m_callback_task_running) {
         // Wait for signal that a message is ready
         if (xSemaphoreTake(client->m_callback_semaphore, pdMS_TO_TICKS(100)) == pdTRUE) {
-            // Process all available messages
-            while (client->m_callback_task_running) {
-                client->try_deliver_message();
+            ESP_LOGI(TAG, "Callback processor: got semaphore, processing messages");
+            
+            // Keep processing while there are messages OR a pending callback
+            // The loop continues as long as there's work to potentially do
+            int message_count = 0;
+            int idle_rounds = 0;
+            const int MAX_IDLE_ROUNDS = 50; // 50 * 10ms = 500ms max idle
+            
+            while (client->m_callback_task_running && idle_rounds < MAX_IDLE_ROUNDS) {
+                bool delivered = false;
+                bool has_messages = false;
+                bool has_callback = false;
                 
-                // Check if there are more messages
-                bool has_more = false;
+                // Check state
                 {
                     std::lock_guard<std::mutex> lock(client->m_queue_mutex);
-                    std::lock_guard<std::mutex> cb_lock(client->m_callback_mutex);
-                    has_more = !client->m_message_queue.empty() && 
-                               client->m_pending_receive_callback != nullptr;
+                    has_messages = !client->m_message_queue.empty();
                 }
-                if (!has_more) {
+                {
+                    std::lock_guard<std::mutex> cb_lock(client->m_callback_mutex);
+                    has_callback = client->m_pending_receive_callback != nullptr;
+                }
+                
+                // If we have both message and callback, deliver
+                if (has_messages && has_callback) {
+                    message_count++;
+                    ESP_LOGI(TAG, "Callback processor: calling try_deliver_message #%d", message_count);
+                    client->try_deliver_message();
+                    delivered = true;
+                    idle_rounds = 0; // Reset idle counter on successful delivery
+                    
+                    // Give SignalR time to process and call receive() again
+                    vTaskDelay(pdMS_TO_TICKS(5));
+                } else if (has_messages && !has_callback) {
+                    // Messages waiting but no callback yet - wait for receive() to be called
+                    idle_rounds++;
+                    vTaskDelay(pdMS_TO_TICKS(10));
+                } else {
+                    // No messages - exit the loop
                     break;
                 }
+            }
+            
+            if (idle_rounds >= MAX_IDLE_ROUNDS) {
+                ESP_LOGW(TAG, "Callback processor: timeout waiting for callback, %d messages queued", 
+                         (int)client->m_message_queue.size());
+            } else {
+                ESP_LOGI(TAG, "Callback processor: processed %d messages this round", message_count);
             }
         }
     }
