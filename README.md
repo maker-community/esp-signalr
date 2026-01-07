@@ -8,6 +8,8 @@ A complete ESP32/ESP-IDF implementation of Microsoft SignalR client, adapted fro
 - 🔧 **Configurable**: Kconfig options for fine-tuning
 - 🚀 **Lightweight**: Only 2 worker threads by default
 - 📦 **Modular**: Optional features can be disabled
+- 🛡️ **Stable**: Queue overflow protection prevents memory leaks
+- 📊 **Debuggable**: Optional stack monitoring for optimization
 
 ## Features
 
@@ -119,10 +121,12 @@ idf.py menuconfig
 
 Available options:
 - Worker pool size (1-5, default: 2)
-- Stack sizes for tasks
+- Stack sizes for tasks (with usage recommendations)
 - Message buffer size
+- Message queue size (overflow protection)
 - Enable/disable negotiation
 - Enable/disable trace logging
+- Enable/disable stack monitoring (development)
 
 See [Configuration Guide](docs/CONFIGURATION_GUIDE.md) for details.
 
@@ -145,7 +149,9 @@ The example includes:
 
 ### Configuration & Optimization
 - ⚙️ [Configuration Guide](docs/CONFIGURATION_GUIDE.md) - Memory optimization tips
-- 📊 [Optimization Report](docs/OPTIMIZATION_REPORT.md) - Technical details
+- 📊 [Optimization Report](docs/OPTIMIZATION_REPORT.md) - Round 1: Basic optimizations
+- 🔬 [Advanced Optimization](docs/ADVANCED_OPTIMIZATION.md) - Round 2: Conditional compilation
+- ✅ [Final Optimizations](docs/FINAL_OPTIMIZATIONS.md) - Round 3: Stability & debugging
 
 ### Examples & Testing
 - 💻 [Complete Example Project](https://github.com/maker-community/esp-signalr-example)

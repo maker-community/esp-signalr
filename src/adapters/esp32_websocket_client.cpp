@@ -11,9 +11,18 @@ static const char* TAG = "ESP32_WS_CLIENT";
 namespace {
     constexpr size_t WEBSOCKET_BUFFER_SIZE = 4096;
     constexpr size_t WEBSOCKET_TASK_STACK_SIZE = 8192;
-    constexpr size_t CALLBACK_TASK_STACK_SIZE = 6144;  // Reduced from 32KB to 6KB for ESP32 memory efficiency
+#ifdef CONFIG_SIGNALR_CALLBACK_STACK_SIZE
+    constexpr size_t CALLBACK_TASK_STACK_SIZE = CONFIG_SIGNALR_CALLBACK_STACK_SIZE;
+#else
+    constexpr size_t CALLBACK_TASK_STACK_SIZE = 6144;  // Default: 6KB
+#endif
     constexpr UBaseType_t CALLBACK_TASK_PRIORITY = 5;
     constexpr uint32_t CONNECTION_TIMEOUT_MS = 10000;
+#ifdef CONFIG_SIGNALR_MAX_QUEUE_SIZE
+    constexpr size_t MAX_MESSAGE_QUEUE_SIZE = CONFIG_SIGNALR_MAX_QUEUE_SIZE;
+#else
+    constexpr size_t MAX_MESSAGE_QUEUE_SIZE = 50;  // Default: prevent memory leak
+#endif
 }
 
 namespace signalr {
@@ -331,10 +340,16 @@ void esp32_websocket_client::handle_data(const char* data, int data_len) {
         
         ESP_LOGI(TAG, "Received complete message: %d bytes: %s", message.length(), message.c_str());
         
-        // Add message to queue
+        // Add message to queue (with overflow protection)
         {
             std::lock_guard<std::mutex> lock(m_queue_mutex);
-            m_message_queue.push(message);
+            if (m_message_queue.size() < MAX_MESSAGE_QUEUE_SIZE) {
+                m_message_queue.push(message);
+            } else {
+                ESP_LOGW(TAG, "Message queue full (%zu messages), dropping oldest message", MAX_MESSAGE_QUEUE_SIZE);
+                m_message_queue.pop();  // Drop oldest
+                m_message_queue.push(message);  // Add newest
+            }
         }
         
         // Signal callback processor task to deliver message
@@ -375,6 +390,11 @@ void esp32_websocket_client::handle_error(const char* error_msg) {
 void esp32_websocket_client::callback_processor_task(void* param) {
     auto* client = static_cast<esp32_websocket_client*>(param);
     ESP_LOGI(TAG, "Callback processor task started");
+    
+#ifdef CONFIG_SIGNALR_ENABLE_STACK_MONITORING
+    UBaseType_t high_water_mark_start = uxTaskGetStackHighWaterMark(NULL);
+    ESP_LOGI(TAG, "Callback task initial stack high water mark: %u bytes", high_water_mark_start * sizeof(StackType_t));
+#endif
     
     while (client->m_callback_task_running) {
         // Wait for signal that a message is ready
@@ -430,6 +450,14 @@ void esp32_websocket_client::callback_processor_task(void* param) {
             }
         }
     }
+    
+#ifdef CONFIG_SIGNALR_ENABLE_STACK_MONITORING
+    UBaseType_t high_water_mark_end = uxTaskGetStackHighWaterMark(NULL);
+    ESP_LOGI(TAG, "Callback task final stack high water mark: %u bytes (minimum free: %u)", 
+             high_water_mark_end * sizeof(StackType_t), high_water_mark_end * sizeof(StackType_t));
+    ESP_LOGI(TAG, "Callback task stack used: %u bytes out of %u",
+             CALLBACK_TASK_STACK_SIZE - (high_water_mark_end * sizeof(StackType_t)), CALLBACK_TASK_STACK_SIZE);
+#endif
     
     ESP_LOGI(TAG, "Callback processor task exiting");
     vTaskDelete(NULL);

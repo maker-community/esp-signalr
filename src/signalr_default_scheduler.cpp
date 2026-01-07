@@ -12,12 +12,27 @@ static const char* TAG = "signalr_scheduler";
 
 // Configuration constants
 namespace {
-    constexpr uint32_t WORKER_TASK_STACK_SIZE = 3072;   // Stack size for worker tasks (optimized for ESP32)
-    constexpr uint32_t SCHEDULER_TASK_STACK_SIZE = 6144; // Stack size for scheduler task (optimized)
+#ifdef CONFIG_SIGNALR_WORKER_STACK_SIZE
+    constexpr uint32_t WORKER_TASK_STACK_SIZE = CONFIG_SIGNALR_WORKER_STACK_SIZE;
+#else
+    constexpr uint32_t WORKER_TASK_STACK_SIZE = 3072;   // Default: 3KB
+#endif
+
+#ifdef CONFIG_SIGNALR_SCHEDULER_STACK_SIZE
+    constexpr uint32_t SCHEDULER_TASK_STACK_SIZE = CONFIG_SIGNALR_SCHEDULER_STACK_SIZE;
+#else
+    constexpr uint32_t SCHEDULER_TASK_STACK_SIZE = 6144; // Default: 6KB
+#endif
+
+#ifdef CONFIG_SIGNALR_WORKER_POOL_SIZE
+    constexpr size_t WORKER_THREAD_POOL_SIZE = CONFIG_SIGNALR_WORKER_POOL_SIZE;
+#else
+    constexpr size_t WORKER_THREAD_POOL_SIZE = 2;        // Default: 2 workers
+#endif
+
     constexpr UBaseType_t TASK_PRIORITY = 5;             // Priority for all SignalR tasks
     constexpr uint32_t SHUTDOWN_RETRY_COUNT = 100;       // Max retries when shutting down
     constexpr uint32_t SHUTDOWN_RETRY_DELAY_MS = 10;     // Delay between shutdown retries
-    constexpr size_t WORKER_THREAD_POOL_SIZE = 2;        // Number of worker threads (reduced for ESP32)
 }
 
 namespace signalr
@@ -26,6 +41,12 @@ namespace signalr
     void thread::task_function(void* param)
     {
         auto* internals = static_cast<struct internals*>(param);
+        
+#ifdef CONFIG_SIGNALR_ENABLE_STACK_MONITORING
+        UBaseType_t high_water_mark_start = uxTaskGetStackHighWaterMark(NULL);
+        ESP_LOGI(TAG, "Worker task started - initial stack high water mark: %u bytes", 
+                 high_water_mark_start * sizeof(StackType_t));
+#endif
         
         while (true)
         {
@@ -40,6 +61,16 @@ namespace signalr
                 if (internals->m_closed && internals->m_callback == nullptr)
                 {
                     xSemaphoreGive(internals->m_callback_mutex);
+                    
+#ifdef CONFIG_SIGNALR_ENABLE_STACK_MONITORING
+                    UBaseType_t high_water_mark_end = uxTaskGetStackHighWaterMark(NULL);
+                    ESP_LOGI(TAG, "Worker task exiting - final stack high water mark: %u bytes", 
+                             high_water_mark_end * sizeof(StackType_t));
+                    ESP_LOGI(TAG, "Worker task stack used: %u bytes out of %u",
+                             WORKER_TASK_STACK_SIZE - (high_water_mark_end * sizeof(StackType_t)), 
+                             WORKER_TASK_STACK_SIZE);
+#endif
+                    
                     vTaskDelete(NULL);
                     return;
                 }
@@ -158,6 +189,12 @@ namespace signalr
     {
         auto* internals = static_cast<struct signalr_default_scheduler::internals*>(param);
         
+#ifdef CONFIG_SIGNALR_ENABLE_STACK_MONITORING
+        UBaseType_t high_water_mark_start = uxTaskGetStackHighWaterMark(NULL);
+        ESP_LOGI(TAG, "Scheduler task started - initial stack high water mark: %u bytes", 
+                 high_water_mark_start * sizeof(StackType_t));
+#endif
+        
         std::vector<thread> threads(WORKER_THREAD_POOL_SIZE);  // Worker threads
         
         size_t prev_callback_count = 0;
@@ -220,6 +257,15 @@ namespace signalr
             
             xSemaphoreGive(internals->m_callback_mutex);
         }
+        
+#ifdef CONFIG_SIGNALR_ENABLE_STACK_MONITORING
+        UBaseType_t high_water_mark_end = uxTaskGetStackHighWaterMark(NULL);
+        ESP_LOGI(TAG, "Scheduler task exiting - final stack high water mark: %u bytes", 
+                 high_water_mark_end * sizeof(StackType_t));
+        ESP_LOGI(TAG, "Scheduler task stack used: %u bytes out of %u",
+                 SCHEDULER_TASK_STACK_SIZE - (high_water_mark_end * sizeof(StackType_t)), 
+                 SCHEDULER_TASK_STACK_SIZE);
+#endif
     }
 
     void signalr_default_scheduler::schedule(const signalr_base_cb& cb, std::chrono::milliseconds delay)

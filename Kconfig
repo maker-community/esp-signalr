@@ -16,6 +16,8 @@ menu "ESP32 SignalR Client Configuration"
         help
             Stack size for each worker task in bytes.
             Default: 3072 (3KB, optimized for ESP32)
+            Recommended: 3KB for simple callbacks, 4KB for complex processing
+            Enable CONFIG_SIGNALR_ENABLE_STACK_MONITORING to measure actual usage.
             
     config SIGNALR_SCHEDULER_STACK_SIZE
         int "Scheduler task stack size (bytes)"
@@ -24,6 +26,8 @@ menu "ESP32 SignalR Client Configuration"
         help
             Stack size for the scheduler task in bytes.
             Default: 6144 (6KB, optimized for ESP32)
+            Recommended: Keep at 6KB unless stack monitoring shows otherwise.
+            Enable CONFIG_SIGNALR_ENABLE_STACK_MONITORING to measure actual usage.
             
     config SIGNALR_CALLBACK_STACK_SIZE
         int "WebSocket callback task stack size (bytes)"
@@ -31,8 +35,10 @@ menu "ESP32 SignalR Client Configuration"
         range 4096 32768
         help
             Stack size for the WebSocket callback processing task.
-            Increase if you experience stack overflow in callbacks.
             Default: 6144 (6KB, reduced from 32KB for memory efficiency)
+            Recommended: 6KB for typical SignalR usage, 8KB for complex JSON processing
+            Increase if you experience stack overflow in callbacks.
+            Enable CONFIG_SIGNALR_ENABLE_STACK_MONITORING to measure actual usage.
             
     config SIGNALR_MAX_MESSAGE_SIZE
         int "Maximum message size (bytes)"
@@ -80,5 +86,24 @@ menu "ESP32 SignalR Client Configuration"
             Enable HTTP negotiation phase support.
             Disable if you always use skip_negotiation mode.
             Saves ~2KB by excluding negotiate.cpp and reducing HTTP client usage.
+            
+    config SIGNALR_MAX_QUEUE_SIZE
+        int "Maximum message queue size"
+        default 50
+        range 10 200
+        help
+            Maximum number of messages that can be queued before dropping oldest messages.
+            Prevents memory leak if message processing is slower than message arrival rate.
+            Default: 50 messages
+            Recommendation: Set based on your message rate and processing speed.
+            
+    config SIGNALR_ENABLE_STACK_MONITORING
+        bool "Enable stack usage monitoring"
+        default n
+        help
+            Enable stack high water mark monitoring for scheduler and callback tasks.
+            Logs stack usage at task start/end to help optimize stack sizes.
+            Adds minimal runtime overhead (~100 bytes RAM, negligible CPU).
+            Useful for development and optimization, disable in production.
 
 endmenu
