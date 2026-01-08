@@ -3,6 +3,7 @@
 #include "esp_log.h"
 #include <cstring>
 #include <exception>
+#include <memory>
 #include <stdexcept>
 
 static const char* TAG = "ESP32_WS_CLIENT";
@@ -260,24 +261,51 @@ void esp32_websocket_client::try_deliver_message() {
     }
     
     // Call callback OUTSIDE the lock to avoid potential deadlock with SignalR
-    ESP_LOGI(TAG, "try_deliver_message: Delivering message to callback (%d bytes): %s", message.length(), message.c_str());
-    ESP_LOGI(TAG, "try_deliver_message: >>> CALLING callback() directly - WARNING: callback might block! >>>");
-    
-    // CRITICAL: SignalR's receive callback (websocket_transport::receive_loop) calls
-    // m_process_response_callback which eventually reaches process_message().
-    // During handshake, this might call m_handshakeTask->get() which blocks!
-    // If we're on the callback processor task, this creates a deadlock.
-    //
-    // WORKAROUND: Just call it and see what happens. The real fix needs
-    // architecture changes to make all callbacks async.
-    
-    try {
-        callback(message, nullptr);
-        ESP_LOGI(TAG, "try_deliver_message: <<< CALLBACK RETURNED - This should happen immediately! <<<");
-    } catch (const std::exception& e) {
-        ESP_LOGE(TAG, "try_deliver_message: Callback threw exception: %s", e.what());
-    } catch (...) {
-        ESP_LOGE(TAG, "try_deliver_message: Callback threw unknown exception");
+    ESP_LOGI(TAG, "try_deliver_message: Dispatching callback asynchronously (%d bytes)", message.length());
+
+    struct callback_payload
+    {
+        std::function<void(const std::string&, std::exception_ptr)> cb;
+        std::string msg;
+    };
+
+    auto* payload = new callback_payload{std::move(callback), std::move(message)};
+
+    auto task = [](void* arg)
+    {
+        std::unique_ptr<callback_payload> payload(static_cast<callback_payload*>(arg));
+        try
+        {
+            payload->cb(payload->msg, nullptr);
+        }
+        catch (const std::exception& e)
+        {
+            ESP_LOGE(TAG, "try_deliver_message: Callback threw exception: %s", e.what());
+        }
+        catch (...)
+        {
+            ESP_LOGE(TAG, "try_deliver_message: Callback threw unknown exception");
+        }
+
+        vTaskDelete(nullptr);
+    };
+
+    if (xTaskCreate(task, "signalr_cb_exec", CALLBACK_TASK_STACK_SIZE, payload, CALLBACK_TASK_PRIORITY, nullptr) != pdPASS)
+    {
+        ESP_LOGW(TAG, "try_deliver_message: callback task creation failed, running inline");
+        try
+        {
+            payload->cb(payload->msg, nullptr);
+        }
+        catch (const std::exception& e)
+        {
+            ESP_LOGE(TAG, "try_deliver_message (inline): Callback threw exception: %s", e.what());
+        }
+        catch (...)
+        {
+            ESP_LOGE(TAG, "try_deliver_message (inline): Callback threw unknown exception");
+        }
+        delete payload;
     }
 }
 

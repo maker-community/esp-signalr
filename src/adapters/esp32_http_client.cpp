@@ -1,6 +1,7 @@
 #include "esp32_http_client.h"
 #include "signalr_client_config.h"
 #include "esp_log.h"
+#include "cancellation_token_source.h"
 #include <cstring>
 #include <stdexcept>
 
@@ -22,8 +23,12 @@ void esp32_http_client::send(const std::string& url, http_request& request,
             request.method == http_method::GET ? "GET" : "POST", url.c_str());
     
     try {
+        if (token.is_canceled()) {
+            throw canceled_exception();
+        }
+
         http_response response = perform_request(url, request.method, request.content, 
-                                                request.headers, request.timeout);
+                                                request.headers, request.timeout, token);
         callback(response, nullptr);
     } catch (const std::exception& e) {
         ESP_LOGE(TAG, "HTTP request failed: %s", e.what());
@@ -35,7 +40,8 @@ http_response esp32_http_client::perform_request(const std::string& url,
                                                  http_method method,
                                                  const std::string& content,
                                                  const std::map<std::string, std::string>& headers,
-                                                 std::chrono::seconds timeout) {
+                                                 std::chrono::seconds timeout,
+                                                 cancellation_token token) {
     http_response response;
     m_response_buffer.clear();
 
@@ -51,6 +57,19 @@ http_response esp32_http_client::perform_request(const std::string& url,
     esp_http_client_handle_t client = esp_http_client_init(&config);
     if (!client) {
         throw std::runtime_error("Failed to initialize HTTP client");
+    }
+
+    bool cancel_registered = false;
+    token.register_callback([client, &cancel_registered]()
+    {
+        cancel_registered = true;
+        esp_http_client_close(client);
+    });
+
+    if (token.is_canceled())
+    {
+        esp_http_client_cleanup(client);
+        throw canceled_exception();
     }
 
     // Set headers
@@ -78,6 +97,10 @@ http_response esp32_http_client::perform_request(const std::string& url,
     }
 
     esp_http_client_cleanup(client);
+    if (cancel_registered && token.is_canceled())
+    {
+        throw canceled_exception();
+    }
     return response;
 }
 

@@ -186,7 +186,11 @@ namespace signalr
                 catch (...) {}
 
                 logger.log(trace_level::error, "[websocket transport] calling m_close_callback to trigger connection stop");
-                    return;
+
+                // Notify connection that transport hit a fatal error so it can transition to disconnected
+                receive_loop_task->cancel();
+                transport->m_close_callback(exception);
+                return;
                 }
 
                 ESP_LOGI("WS_TRANSPORT", "receive_loop: received message %zu bytes, calling process_response_callback", message.length());

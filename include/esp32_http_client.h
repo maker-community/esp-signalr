@@ -35,7 +35,8 @@ private:
                                   http_method method,
                                   const std::string& content,
                                   const std::map<std::string, std::string>& headers,
-                                  std::chrono::seconds timeout);
+                                  std::chrono::seconds timeout,
+                                  cancellation_token token);
 
     std::string m_response_buffer;
 };
