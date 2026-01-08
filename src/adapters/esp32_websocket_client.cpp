@@ -486,7 +486,7 @@ void esp32_websocket_client::callback_processor_task(void* param) {
     while (client->m_callback_task_running) {
         // Wait for signal that a message is ready
         if (xSemaphoreTake(client->m_callback_semaphore, pdMS_TO_TICKS(100)) == pdTRUE) {
-            ESP_LOGI(TAG, "Callback processor: got semaphore, processing messages");
+            ESP_LOGD(TAG, "Callback processor: got semaphore, processing messages");
             
             // Keep processing while there are messages OR a pending callback
             // The loop continues as long as there's work to potentially do
@@ -495,7 +495,7 @@ void esp32_websocket_client::callback_processor_task(void* param) {
             const int MAX_IDLE_ROUNDS = 50; // 50 * 10ms = 500ms max idle
             
             while (client->m_callback_task_running && idle_rounds < MAX_IDLE_ROUNDS) {
-                ESP_LOGI(TAG, "Callback processor: Round %d, calling try_deliver_message", message_count + 1);
+                ESP_LOGD(TAG, "Callback processor: Round %d, calling try_deliver_message", message_count + 1);
                 bool has_messages = false;
                 bool has_callback = false;
                 
@@ -531,7 +531,7 @@ void esp32_websocket_client::callback_processor_task(void* param) {
             if (idle_rounds >= MAX_IDLE_ROUNDS) {
                 ESP_LOGW(TAG, "Callback processor: timeout waiting for callback, %d messages queued", 
                          (int)client->m_message_queue.size());
-            } else {
+            } else if (message_count > 0) {
                 ESP_LOGI(TAG, "Callback processor: processed %d messages this round", message_count);
             }
         }
@@ -594,11 +594,11 @@ void esp32_websocket_client::stop_callback_processor() {
 }
 
 void esp32_websocket_client::schedule_callback_delivery() {
-    ESP_LOGI(TAG, "schedule_callback_delivery called");
+    ESP_LOGD(TAG, "schedule_callback_delivery called");
     if (m_callback_semaphore != nullptr) {
         BaseType_t result = xSemaphoreGive(m_callback_semaphore);
         if (result == pdTRUE) {
-            ESP_LOGI(TAG, "schedule_callback_delivery: Semaphore given successfully");
+            ESP_LOGD(TAG, "schedule_callback_delivery: Semaphore given successfully");
         } else {
             ESP_LOGW(TAG, "schedule_callback_delivery: Failed to give semaphore (already given?)");
         }
