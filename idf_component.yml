@@ -1,4 +1,3 @@
-name: verdure/esp-signalr
 version: "1.0.0"
 description: "ESP32 SignalR Client Library - Adapted from Microsoft SignalR-Client-Cpp"
 url: "https://github.com/maker-community/esp-signalr"
