@@ -7,6 +7,8 @@
 #include "signalr_exception.h"
 #include "base_uri.h"
 #include "esp_log.h"
+#include <thread>
+#include <chrono>
 
 #pragma warning (push)
 #pragma warning (disable : 5204 4355)
@@ -85,12 +87,26 @@ namespace signalr
 
                 ESP_LOGI("WS_TRANSPORT", "receive_loop: Acquiring m_start_stop_lock...");
                 bool disconnected;
-                {
-                    std::lock_guard<std::mutex> lock(transport->m_start_stop_lock);
+                bool got_lock = false;
+                // Avoid deadlock: try-lock with short retries so handshake can proceed even if another thread holds the lock
+                for (int i = 0; i < 50 && !got_lock; ++i) { // ~50 ms worst-case with 1 ms delay
+                    if (transport->m_start_stop_lock.try_lock()) {
+                        got_lock = true;
+                        break;
+                    }
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                }
+
+                if (got_lock) {
                     ESP_LOGI("WS_TRANSPORT", "receive_loop: Got m_start_stop_lock");
                     disconnected = transport->m_disconnected;
+                    transport->m_start_stop_lock.unlock();
+                    ESP_LOGI("WS_TRANSPORT", "receive_loop: Released m_start_stop_lock, disconnected=%d", disconnected);
+                } else {
+                    // Fall back to a lock-free snapshot to prevent the receive loop from stalling indefinitely
+                    disconnected = transport->m_disconnected;
+                    ESP_LOGW("WS_TRANSPORT", "receive_loop: Failed to get m_start_stop_lock after retries, proceeding (disconnected=%d)", disconnected);
                 }
-                ESP_LOGI("WS_TRANSPORT", "receive_loop: Released m_start_stop_lock, disconnected=%d", disconnected);
                 if (disconnected)
                 {
                     ESP_LOGW("WS_TRANSPORT", "receive_loop: Already disconnected, returning");

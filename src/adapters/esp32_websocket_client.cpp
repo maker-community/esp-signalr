@@ -41,7 +41,8 @@ esp32_websocket_client::esp32_websocket_client(const signalr_client_config& conf
         ESP_LOGE(TAG, "Failed to create event group");
     }
     
-    m_callback_semaphore = xSemaphoreCreateBinary();
+    // Counting semaphore to avoid losing wakeups when many frames arrive quickly
+    m_callback_semaphore = xSemaphoreCreateCounting(MAX_MESSAGE_QUEUE_SIZE, 0);
     if (!m_callback_semaphore) {
         ESP_LOGE(TAG, "Failed to create callback semaphore");
     }
@@ -432,7 +433,6 @@ void esp32_websocket_client::callback_processor_task(void* param) {
             
             while (client->m_callback_task_running && idle_rounds < MAX_IDLE_ROUNDS) {
                 ESP_LOGI(TAG, "Callback processor: Round %d, calling try_deliver_message", message_count + 1);
-                bool delivered = false;
                 bool has_messages = false;
                 bool has_callback = false;
                 
@@ -451,7 +451,6 @@ void esp32_websocket_client::callback_processor_task(void* param) {
                     message_count++;
                     ESP_LOGI(TAG, "Callback processor: calling try_deliver_message #%d", message_count);
                     client->try_deliver_message();
-                    delivered = true;
                     idle_rounds = 0; // Reset idle counter on successful delivery
                     
                     // Give SignalR time to process and call receive() again

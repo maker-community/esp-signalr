@@ -11,6 +11,8 @@
 #include "json_hub_protocol.h"
 #include "message_type.h"
 #include "handshake_protocol.h"
+#include "signalr_client_config.h"
+#include "json_helpers.h"
 #include "websocket_client.h"
 #include "signalr_default_scheduler.h"
 #include "freertos/FreeRTOS.h"
@@ -148,7 +150,8 @@ namespace signalr
                 }
 
                 std::shared_ptr<std::mutex> handshake_request_lock = std::make_shared<std::mutex>();
-                std::shared_ptr<bool> handshake_request_done = std::make_shared<bool>();
+                // Track whether handshake callback has already run; explicitly init to false
+                std::shared_ptr<bool> handshake_request_done = std::make_shared<bool>(false);
 
                 auto handle_handshake = [weak_connection, handshake_request_done, handshake_request_lock, callback](std::exception_ptr exception, bool fromSend)
                 {
@@ -374,8 +377,16 @@ namespace signalr
             if (!m_handshakeReceived)
             {
                 ESP_LOGI("HUB_CONN", "process_message: Handshake NOT received yet, parsing handshake...");
+                // Our WebSocket adapter strips the 0x1E record separator when queuing messages.
+                // The upstream handshake parser expects the separator to delineate the handshake frame.
+                // If it is missing, append it temporarily so parse_handshake succeeds.
+                std::string handshake_frame = response;
+                if (handshake_frame.find(record_separator) == std::string::npos) {
+                    handshake_frame.push_back(record_separator);
+                }
+
                 signalr::value handshake;
-                std::tie(response, handshake) = handshake::parse_handshake(response);
+                std::tie(response, handshake) = handshake::parse_handshake(handshake_frame);
                 ESP_LOGI("HUB_CONN", "process_message: Handshake parsed");
 
                 auto& obj = handshake.as_map();
