@@ -4,9 +4,9 @@ description: "ESP32 SignalR Client Library - Adapted from Microsoft SignalR-Clie
 url: "https://github.com/maker-community/esp-signalr"
 repository: "https://github.com/maker-community/esp-signalr.git"
 documentation: "https://github.com/maker-community/esp-signalr/blob/main/docs/QUICKSTART.md"
+issues: "https://github.com/maker-community/esp-signalr/issues"
 
-examples:
-  - path: "https://github.com/maker-community/esp-signalr-example"
+# Note: Example project available at https://github.com/maker-community/esp-signalr-example
 
 targets:
   - esp32
