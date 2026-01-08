@@ -24,6 +24,12 @@ namespace {
 #else
     constexpr size_t MAX_MESSAGE_QUEUE_SIZE = 50;  // Default: prevent memory leak
 #endif
+
+#ifdef CONFIG_SIGNALR_MAX_CALLBACK_TASKS
+    constexpr UBaseType_t MAX_CALLBACK_EXEC_TASKS = CONFIG_SIGNALR_MAX_CALLBACK_TASKS;
+#else
+    constexpr UBaseType_t MAX_CALLBACK_EXEC_TASKS = 4;  // Limit concurrent executor tasks
+#endif
 }
 
 namespace signalr {
@@ -34,6 +40,7 @@ esp32_websocket_client::esp32_websocket_client(const signalr_client_config& conf
     , m_callback_task(nullptr)
     , m_callback_semaphore(nullptr)
     , m_callback_task_running(false)
+    , m_callback_exec_limiter(nullptr)
     , m_is_connected(false)
     , m_is_stopping(false) {
     
@@ -47,6 +54,11 @@ esp32_websocket_client::esp32_websocket_client(const signalr_client_config& conf
     if (!m_callback_semaphore) {
         ESP_LOGE(TAG, "Failed to create callback semaphore");
     }
+
+    m_callback_exec_limiter = xSemaphoreCreateCounting(MAX_CALLBACK_EXEC_TASKS, MAX_CALLBACK_EXEC_TASKS);
+    if (!m_callback_exec_limiter) {
+        ESP_LOGE(TAG, "Failed to create callback exec limiter semaphore");
+    }
 }
 
 esp32_websocket_client::~esp32_websocket_client() {
@@ -59,6 +71,9 @@ esp32_websocket_client::~esp32_websocket_client() {
     }
     if (m_callback_semaphore) {
         vSemaphoreDelete(m_callback_semaphore);
+    }
+    if (m_callback_exec_limiter) {
+        vSemaphoreDelete(m_callback_exec_limiter);
     }
 }
 
@@ -267,9 +282,10 @@ void esp32_websocket_client::try_deliver_message() {
     {
         std::function<void(const std::string&, std::exception_ptr)> cb;
         std::string msg;
+        SemaphoreHandle_t limiter;
     };
 
-    auto* payload = new callback_payload{std::move(callback), std::move(message)};
+    auto* payload = new callback_payload{std::move(callback), std::move(message), m_callback_exec_limiter};
 
     auto task = [](void* arg)
     {
@@ -287,12 +303,31 @@ void esp32_websocket_client::try_deliver_message() {
             ESP_LOGE(TAG, "try_deliver_message: Callback threw unknown exception");
         }
 
+        if (payload->limiter)
+        {
+            xSemaphoreGive(payload->limiter);
+        }
+
         vTaskDelete(nullptr);
     };
 
-    if (xTaskCreate(task, "signalr_cb_exec", CALLBACK_TASK_STACK_SIZE, payload, CALLBACK_TASK_PRIORITY, nullptr) != pdPASS)
+    bool scheduled = false;
+    if (m_callback_exec_limiter && xSemaphoreTake(m_callback_exec_limiter, 0) == pdTRUE)
     {
-        ESP_LOGW(TAG, "try_deliver_message: callback task creation failed, running inline");
+        if (xTaskCreate(task, "signalr_cb_exec", CALLBACK_TASK_STACK_SIZE, payload, CALLBACK_TASK_PRIORITY, nullptr) == pdPASS)
+        {
+            scheduled = true;
+        }
+        else
+        {
+            // task creation failed; release permit
+            xSemaphoreGive(m_callback_exec_limiter);
+        }
+    }
+
+    if (!scheduled)
+    {
+        ESP_LOGW(TAG, "try_deliver_message: limiter/task unavailable, running inline");
         try
         {
             payload->cb(payload->msg, nullptr);

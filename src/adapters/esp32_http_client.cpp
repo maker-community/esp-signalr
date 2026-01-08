@@ -2,6 +2,7 @@
 #include "signalr_client_config.h"
 #include "esp_log.h"
 #include "cancellation_token_source.h"
+#include <atomic>
 #include <cstring>
 #include <stdexcept>
 
@@ -59,11 +60,14 @@ http_response esp32_http_client::perform_request(const std::string& url,
         throw std::runtime_error("Failed to initialize HTTP client");
     }
 
-    bool cancel_registered = false;
-    token.register_callback([client, &cancel_registered]()
+    auto cleanup_flag = std::make_shared<std::atomic<bool>>(false);
+
+    token.register_callback([client, cleanup_flag]()
     {
-        cancel_registered = true;
-        esp_http_client_close(client);
+        if (!cleanup_flag->load(std::memory_order_acquire))
+        {
+            esp_http_client_close(client);
+        }
     });
 
     if (token.is_canceled())
@@ -96,8 +100,9 @@ http_response esp32_http_client::perform_request(const std::string& url,
         throw std::runtime_error("HTTP request failed: " + std::string(esp_err_to_name(err)));
     }
 
+    cleanup_flag->store(true, std::memory_order_release);
     esp_http_client_cleanup(client);
-    if (cancel_registered && token.is_canceled())
+    if (token.is_canceled())
     {
         throw canceled_exception();
     }
