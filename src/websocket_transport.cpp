@@ -152,44 +152,48 @@ namespace signalr
                     receive_loop_task->cancel();
                     return;
                 }
-                ESP_LOGE("WS_TRANSPORT", "receive ERROR: calling m_close_callback to stop connection!");
-                std::promise<void> promise;
+                ESP_LOGE("WS_TRANSPORT", "receive ERROR: scheduling async stop to avoid websocket-task deadlock");
+
+                // Notify connection that transport hit a fatal error so it can transition to disconnected
+                receive_loop_task->cancel();
+
                 auto client = weak_websocket_client.lock();
                 if (!client)
                 {
                     // this should not be hit
-                    // we wait for the receive loop to complete before completing stop (which will then destruct the transport and client)
                     logger.log(trace_level::critical,
                         "[websocket transport] websocket client has been destructed before the receive loop completes, this is a bug");
                     assert(client != nullptr);
                 }
 
-                // because transport.stop won't be called we need to stop the underlying client and invoke the transports close callback
-                client->stop([&promise](std::exception_ptr exception)
-                {
-                    if (exception != nullptr)
+                // Stop the websocket client on a separate thread so we are not inside the websocket task
+                // (esp_websocket_client asserts when stop is invoked from its own task context)
+                std::thread([client, logger, transport, exception]() mutable {
+                    std::promise<void> promise;
+                    client->stop([&promise](std::exception_ptr stop_exception)
                     {
-                        promise.set_exception(exception);
-                    }
-                    else
+                        if (stop_exception != nullptr)
+                        {
+                            promise.set_exception(stop_exception);
+                        }
+                        else
+                        {
+                            promise.set_value();
+                        }
+                    });
+
+                    try
                     {
-                        promise.set_value();
+                        promise.get_future().get();
                     }
-                });
+                    catch (...)
+                    {
+                        // swallow to let outer exception propagate via m_close_callback
+                    }
 
-                try
-                {
-                    promise.get_future().get();
-                }
-                // We prefer the outer exception bubbling up to the user
-                // REVIEW: log here?
-                catch (...) {}
-
-                logger.log(trace_level::error, "[websocket transport] calling m_close_callback to trigger connection stop");
-
-                // Notify connection that transport hit a fatal error so it can transition to disconnected
-                receive_loop_task->cancel();
-                transport->m_close_callback(exception);
+                    logger.log(trace_level::error, "[websocket transport] calling m_close_callback to trigger connection stop");
+                    transport->m_close_callback(exception);
+                }).detach();
                 return;
                 }
 
