@@ -15,7 +15,10 @@ namespace {
 #ifdef CONFIG_SIGNALR_WORKER_STACK_SIZE
     constexpr uint32_t WORKER_TASK_STACK_SIZE = CONFIG_SIGNALR_WORKER_STACK_SIZE;
 #else
-    constexpr uint32_t WORKER_TASK_STACK_SIZE = 3072;   // Default: 3KB
+    // Increased from 3072 to 6144 (6KB) - CRITICAL for C++ exception handling
+    // C++ exception unwinding with std::function and std::string needs ~4-5KB minimum
+    // 3KB was causing stack overflow during exception propagation in send() failures
+    constexpr uint32_t WORKER_TASK_STACK_SIZE = 6144;   // Default: 6KB
 #endif
 
 #ifdef CONFIG_SIGNALR_SCHEDULER_STACK_SIZE
@@ -42,11 +45,10 @@ namespace signalr
     {
         auto* internals = static_cast<struct internals*>(param);
         
-#ifdef CONFIG_SIGNALR_ENABLE_STACK_MONITORING
+        // Always monitor stack - critical for debugging stack overflow issues
         UBaseType_t high_water_mark_start = uxTaskGetStackHighWaterMark(NULL);
-        ESP_LOGI(TAG, "Worker task started - initial stack high water mark: %u bytes", 
-                 high_water_mark_start * sizeof(StackType_t));
-#endif
+        ESP_LOGI(TAG, "Worker task started - stack: %u bytes allocated, %u bytes free initially", 
+                 WORKER_TASK_STACK_SIZE, high_water_mark_start * sizeof(StackType_t));
         
         while (true)
         {
@@ -62,14 +64,16 @@ namespace signalr
                 {
                     xSemaphoreGive(internals->m_callback_mutex);
                     
-#ifdef CONFIG_SIGNALR_ENABLE_STACK_MONITORING
+                    // Always log final stack statistics
                     UBaseType_t high_water_mark_end = uxTaskGetStackHighWaterMark(NULL);
-                    ESP_LOGI(TAG, "Worker task exiting - final stack high water mark: %u bytes", 
+                    size_t stack_used = WORKER_TASK_STACK_SIZE - (high_water_mark_end * sizeof(StackType_t));
+                    ESP_LOGI(TAG, "Worker task exiting - stack: %u bytes used (%.1f%%), %u bytes free (min)",
+                             stack_used, (stack_used * 100.0f) / WORKER_TASK_STACK_SIZE,
                              high_water_mark_end * sizeof(StackType_t));
-                    ESP_LOGI(TAG, "Worker task stack used: %u bytes out of %u",
-                             WORKER_TASK_STACK_SIZE - (high_water_mark_end * sizeof(StackType_t)), 
-                             WORKER_TASK_STACK_SIZE);
-#endif
+                    
+                    if (high_water_mark_end * sizeof(StackType_t) < 512) {
+                        ESP_LOGW(TAG, "WARNING: Worker task had very low stack! Risk of overflow!");
+                    }
                     
                     vTaskDelete(NULL);
                     return;

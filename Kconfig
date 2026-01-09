@@ -11,12 +11,14 @@ menu "ESP32 SignalR Client Configuration"
             
     config SIGNALR_WORKER_STACK_SIZE
         int "Worker task stack size (bytes)"
-        default 3072
+        default 6144
         range 2048 8192
         help
             Stack size for each worker task in bytes.
-            Default: 3072 (3KB, optimized for ESP32)
-            Recommended: 3KB for simple callbacks, 4KB for complex processing
+            CRITICAL: C++ exception handling requires minimum 4-5KB stack!
+            Default: 6144 (6KB) - required for safe exception unwinding
+            Old default 3KB caused stack overflow during send() failures with exceptions.
+            DO NOT reduce below 4096 unless you disable all exception throwing.
             Enable CONFIG_SIGNALR_ENABLE_STACK_MONITORING to measure actual usage.
             
     config SIGNALR_SCHEDULER_STACK_SIZE

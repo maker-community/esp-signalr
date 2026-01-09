@@ -9,6 +9,8 @@
 #include "esp_log.h"
 #include <thread>
 #include <chrono>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 #pragma warning (push)
 #pragma warning (disable : 5204 4355)
@@ -76,10 +78,9 @@ namespace signalr
         // been started in which case we just stop the loop by not scheduling another receive task.
         websocket_client->receive([weak_transport, logger, receive_loop_task, weak_websocket_client](std::string message, std::exception_ptr exception)
             {
-                ESP_LOGI("WS_TRANSPORT", ">>> receive_loop callback ENTERED, message length: %zu <<<", message.length());
+                ESP_LOGD("WS_TRANSPORT", "RX loop: %zu bytes", message.length());
                 
                 auto transport = weak_transport.lock();
-                ESP_LOGI("WS_TRANSPORT", "receive_loop: got transport lock");
 
                 // transport can be null if a websocket transport specific test doesn't call and wait for stop and relies on the destructor, if that happens update the test to call and wait for stop.
                 // stop waits for the receive loop to complete so the transport should never be null
@@ -88,29 +89,25 @@ namespace signalr
                 ESP_LOGI("WS_TRANSPORT", "receive_loop: Acquiring m_start_stop_lock...");
                 bool disconnected;
                 bool got_lock = false;
-                // Avoid deadlock: try-lock with short retries so handshake can proceed even if another thread holds the lock
-                for (int i = 0; i < 50 && !got_lock; ++i) { // ~50 ms worst-case with 1 ms delay
+                // Optimized: Reduce retry count for faster processing
+                for (int i = 0; i < 10 && !got_lock; ++i) {
                     if (transport->m_start_stop_lock.try_lock()) {
                         got_lock = true;
                         break;
                     }
-                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                    vTaskDelay(pdMS_TO_TICKS(1));
                 }
 
                 if (got_lock) {
-                    ESP_LOGI("WS_TRANSPORT", "receive_loop: Got m_start_stop_lock");
                     disconnected = transport->m_disconnected;
                     transport->m_start_stop_lock.unlock();
-                    ESP_LOGI("WS_TRANSPORT", "receive_loop: Released m_start_stop_lock, disconnected=%d", disconnected);
                 } else {
-                    // Fall back to a lock-free snapshot to prevent the receive loop from stalling indefinitely
                     disconnected = transport->m_disconnected;
-                    ESP_LOGW("WS_TRANSPORT", "receive_loop: Failed to get m_start_stop_lock after retries, proceeding (disconnected=%d)", disconnected);
+                    ESP_LOGW("WS_TRANSPORT", "Lock timeout");
                 }
                 if (disconnected)
                 {
-                    ESP_LOGW("WS_TRANSPORT", "receive_loop: Already disconnected, returning");
-                    // stop has been called, tell it the receive loop is done and return
+                    ESP_LOGD("WS_TRANSPORT", "Disconnected, exit loop");
                     receive_loop_task->cancel();
                     return;
                 }
@@ -126,7 +123,7 @@ namespace signalr
                     {
                         logger.log(
                             trace_level::error,
-                            std::string("[websocket transport] error receiving response from websocket: ")
+                            std::string("[websocket transport] RX error: ")
                             .append(e.what()));
                     }
                     catch (...)
