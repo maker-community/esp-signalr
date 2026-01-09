@@ -15,6 +15,7 @@
 #include "_exports.h"
 #include <map>
 #include <string>
+#include <vector>
 #include "scheduler.h"
 #include <memory>
 
@@ -54,6 +55,14 @@ namespace signalr
         SIGNALRCLIENT_API void set_keepalive_interval(std::chrono::milliseconds);
         SIGNALRCLIENT_API std::chrono::milliseconds get_keepalive_interval() const noexcept;
 
+        // Auto-reconnect settings
+        SIGNALRCLIENT_API void set_reconnect_delays(const std::vector<std::chrono::milliseconds>& delays);
+        SIGNALRCLIENT_API const std::vector<std::chrono::milliseconds>& get_reconnect_delays() const noexcept;
+        SIGNALRCLIENT_API void set_max_reconnect_attempts(int max_attempts);
+        SIGNALRCLIENT_API int get_max_reconnect_attempts() const noexcept;
+        SIGNALRCLIENT_API void enable_auto_reconnect(bool enable);
+        SIGNALRCLIENT_API bool is_auto_reconnect_enabled() const noexcept;
+
     private:
 #ifdef USE_CPPRESTSDK
         web::http::client::http_client_config m_http_client_config;
@@ -66,5 +75,10 @@ namespace signalr
         std::chrono::milliseconds m_handshake_timeout;
         std::chrono::milliseconds m_server_timeout;
         std::chrono::milliseconds m_keepalive_interval;
+
+        // Auto-reconnect settings
+        bool m_auto_reconnect_enabled;
+        std::vector<std::chrono::milliseconds> m_reconnect_delays;
+        int m_max_reconnect_attempts;
     };
 }

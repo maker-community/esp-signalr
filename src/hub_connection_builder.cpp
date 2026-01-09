@@ -3,6 +3,7 @@
 // See the LICENSE file in the project root for more information.
 
 #include "hub_connection_builder.h"
+#include "signalr_client_config.h"
 #include <stdexcept>
 #include "json_hub_protocol.h"
 
@@ -78,6 +79,26 @@ namespace signalr
         return *this;
     }
 
+    hub_connection_builder& hub_connection_builder::with_automatic_reconnect()
+    {
+        // Default reconnect delays matching C# and JS clients: 0, 2, 10, 30 seconds
+        m_auto_reconnect_enabled = true;
+        m_reconnect_delays = {
+            std::chrono::seconds(0),
+            std::chrono::seconds(2),
+            std::chrono::seconds(10),
+            std::chrono::seconds(30)
+        };
+        return *this;
+    }
+
+    hub_connection_builder& hub_connection_builder::with_automatic_reconnect(const std::vector<std::chrono::milliseconds>& reconnect_delays)
+    {
+        m_auto_reconnect_enabled = true;
+        m_reconnect_delays = reconnect_delays;
+        return *this;
+    }
+
 #ifdef USE_MSGPACK
     hub_connection_builder& hub_connection_builder::with_messagepack_hub_protocol()
     {
@@ -113,6 +134,21 @@ namespace signalr
             hub_protocol = std::unique_ptr<json_hub_protocol>(new json_hub_protocol());
         }
 
-        return hub_connection(m_url, std::move(hub_protocol), m_log_level, m_logger, m_http_client_factory, m_websocket_factory, m_skip_negotiation);
+        auto connection = hub_connection(m_url, std::move(hub_protocol), m_log_level, m_logger, m_http_client_factory, m_websocket_factory, m_skip_negotiation);
+        
+        // Apply auto-reconnect configuration if enabled
+        if (m_auto_reconnect_enabled)
+        {
+            // Get existing config or create new one
+            signalr_client_config config;
+            config.enable_auto_reconnect(true);
+            config.set_reconnect_delays(m_reconnect_delays);
+            config.set_max_reconnect_attempts(-1); // Infinite retries by default
+            
+            // Apply the config - this will merge with any existing settings
+            connection.set_client_config(config);
+        }
+        
+        return connection;
     }
 }

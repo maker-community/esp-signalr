@@ -229,8 +229,9 @@ void esp32_websocket_client::start(const std::string& url, std::function<void(st
     // Set network timeout to prevent premature disconnection
     // This should be longer than the SignalR server_timeout to allow SignalR-level timeout handling
     ws_cfg.network_timeout_ms = 120000;  // 120 seconds (2x the SignalR server_timeout of 60s)
-    // Enable auto-reconnect with exponential backoff
-    ws_cfg.reconnect_timeout_ms = INITIAL_RETRY_DELAY_MS;
+    // CRITICAL: Disable WebSocket-level auto-reconnect so SignalR layer can handle reconnection
+    // If WebSocket auto-reconnects, SignalR's handle_disconnection() won't be called
+    ws_cfg.disable_auto_reconnect = true;  // Completely disable auto-reconnect
     // Disable automatic ping to save bandwidth (SignalR has its own keepalive)
     ws_cfg.ping_interval_sec = 0;
 
@@ -294,13 +295,21 @@ void esp32_websocket_client::stop(std::function<void(std::exception_ptr)> callba
     }
     
     if (m_client) {
-        esp_websocket_client_close(m_client, portMAX_DELAY);
+        // Use a timeout for close to prevent hanging indefinitely if the connection is already broken
+        // The transport layer might be stuck waiting for a Close frame that will never come
+        ESP_LOGI(TAG, "Closing WebSocket client...");
+        esp_websocket_client_close(m_client, pdMS_TO_TICKS(1000)); 
+        
+        ESP_LOGI(TAG, "Stopping WebSocket client...");
         esp_websocket_client_stop(m_client);
+        
+        ESP_LOGI(TAG, "Destroying WebSocket client...");
         esp_websocket_client_destroy(m_client);
         m_client = nullptr;
     }
     m_is_connected = false;
     xEventGroupClearBits(m_event_group, CONNECTED_BIT);
+    ESP_LOGI(TAG, "WebSocket client cleanup complete");
     callback(nullptr);
 }
 

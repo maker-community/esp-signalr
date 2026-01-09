@@ -52,8 +52,19 @@ namespace signalr
         : m_handshake_timeout(std::chrono::seconds(15))
         , m_server_timeout(std::chrono::seconds(30))
         , m_keepalive_interval(std::chrono::seconds(15))
+        , m_auto_reconnect_enabled(false)
+        , m_max_reconnect_attempts(-1) // -1 means infinite retries
     {
         m_scheduler = std::make_shared<signalr_default_scheduler>();
+        
+        // Default reconnect delays following exponential backoff (similar to JS/C# clients)
+        // 0, 2, 10, 30 seconds
+        m_reconnect_delays = {
+            std::chrono::seconds(0),
+            std::chrono::seconds(2),
+            std::chrono::seconds(10),
+            std::chrono::seconds(30)
+        };
     }
 
     const std::map<std::string, std::string>& signalr_client_config::get_http_headers() const noexcept
@@ -129,5 +140,35 @@ namespace signalr
     std::chrono::milliseconds signalr_client_config::get_keepalive_interval() const noexcept
     {
         return m_keepalive_interval;
+    }
+
+    void signalr_client_config::set_reconnect_delays(const std::vector<std::chrono::milliseconds>& delays)
+    {
+        m_reconnect_delays = delays;
+    }
+
+    const std::vector<std::chrono::milliseconds>& signalr_client_config::get_reconnect_delays() const noexcept
+    {
+        return m_reconnect_delays;
+    }
+
+    void signalr_client_config::set_max_reconnect_attempts(int max_attempts)
+    {
+        m_max_reconnect_attempts = max_attempts;
+    }
+
+    int signalr_client_config::get_max_reconnect_attempts() const noexcept
+    {
+        return m_max_reconnect_attempts;
+    }
+
+    void signalr_client_config::enable_auto_reconnect(bool enable)
+    {
+        m_auto_reconnect_enabled = enable;
+    }
+
+    bool signalr_client_config::is_auto_reconnect_enabled() const noexcept
+    {
+        return m_auto_reconnect_enabled;
     }
 }

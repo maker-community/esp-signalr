@@ -7,6 +7,7 @@
 #include "_exports.h"
 #include "hub_connection.h"
 #include <memory>
+#include <vector>
 #include "websocket_client.h"
 #include "http_client.h"
 
@@ -35,6 +36,10 @@ namespace signalr
 
         SIGNALRCLIENT_API hub_connection_builder& skip_negotiation(bool skip = true);
 
+        // Auto-reconnect configuration (similar to C# and JS clients)
+        SIGNALRCLIENT_API hub_connection_builder& with_automatic_reconnect();
+        SIGNALRCLIENT_API hub_connection_builder& with_automatic_reconnect(const std::vector<std::chrono::milliseconds>& reconnect_delays);
+
 #ifdef USE_MSGPACK
         SIGNALRCLIENT_API hub_connection_builder& with_messagepack_hub_protocol();
 #endif
@@ -50,5 +55,9 @@ namespace signalr
         std::function<std::shared_ptr<http_client>(const signalr_client_config&)> m_http_client_factory;
         bool m_skip_negotiation = false;
         bool m_use_messagepack = false;
+        
+        // Auto-reconnect settings
+        bool m_auto_reconnect_enabled = false;
+        std::vector<std::chrono::milliseconds> m_reconnect_delays;
     };
 }
