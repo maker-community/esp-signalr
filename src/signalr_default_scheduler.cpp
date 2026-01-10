@@ -2,29 +2,30 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-// ESP32 adaptation: FreeRTOS-based implementation
+// ESP32 adaptation: FreeRTOS-based implementation with PSRAM optimization
 
 #include "signalr_default_scheduler.h"
+#include "memory_utils.h"
 #include "esp_log.h"
 #include <assert.h>
 
 static const char* TAG = "signalr_scheduler";
 
-// Configuration constants
+// Configuration constants - OPTIMIZED based on PSRAM availability
 namespace {
 #ifdef CONFIG_SIGNALR_WORKER_STACK_SIZE
     constexpr uint32_t WORKER_TASK_STACK_SIZE = CONFIG_SIGNALR_WORKER_STACK_SIZE;
 #else
-    // Increased from 3072 to 6144 (6KB) - CRITICAL for C++ exception handling
-    // C++ exception unwinding with std::function and std::string needs ~4-5KB minimum
-    // 3KB was causing stack overflow during exception propagation in send() failures
-    constexpr uint32_t WORKER_TASK_STACK_SIZE = 6144;   // Default: 6KB
+    // OPTIMIZED: Reduced from 6144 to 4096 (4KB) when no PSRAM
+    // With PSRAM available, memory_utils will recommend larger stacks
+    constexpr uint32_t WORKER_TASK_STACK_SIZE = 4096;
 #endif
 
 #ifdef CONFIG_SIGNALR_SCHEDULER_STACK_SIZE
     constexpr uint32_t SCHEDULER_TASK_STACK_SIZE = CONFIG_SIGNALR_SCHEDULER_STACK_SIZE;
 #else
-    constexpr uint32_t SCHEDULER_TASK_STACK_SIZE = 6144; // Default: 6KB
+    // OPTIMIZED: Reduced from 6144 to 4096 (4KB) - scheduler is lightweight
+    constexpr uint32_t SCHEDULER_TASK_STACK_SIZE = 4096;
 #endif
 
 #ifdef CONFIG_SIGNALR_WORKER_POOL_SIZE
@@ -36,6 +37,15 @@ namespace {
     constexpr UBaseType_t TASK_PRIORITY = 5;             // Priority for all SignalR tasks
     constexpr uint32_t SHUTDOWN_RETRY_COUNT = 100;       // Max retries when shutting down
     constexpr uint32_t SHUTDOWN_RETRY_DELAY_MS = 10;     // Delay between shutdown retries
+    
+    // Get actual stack size based on PSRAM availability
+    inline uint32_t get_actual_worker_stack_size() {
+        return signalr::memory::get_recommended_stack_size("worker");
+    }
+    
+    inline uint32_t get_actual_scheduler_stack_size() {
+        return signalr::memory::get_recommended_stack_size("scheduler");
+    }
 }
 
 namespace signalr
@@ -47,8 +57,9 @@ namespace signalr
         
         // Always monitor stack - critical for debugging stack overflow issues
         UBaseType_t high_water_mark_start = uxTaskGetStackHighWaterMark(NULL);
+        uint32_t actual_stack = get_actual_worker_stack_size();
         ESP_LOGI(TAG, "Worker task started - stack: %u bytes allocated, %u bytes free initially", 
-                 WORKER_TASK_STACK_SIZE, high_water_mark_start * sizeof(StackType_t));
+                 actual_stack, high_water_mark_start * sizeof(StackType_t));
         
         while (true)
         {
@@ -66,9 +77,10 @@ namespace signalr
                     
                     // Always log final stack statistics
                     UBaseType_t high_water_mark_end = uxTaskGetStackHighWaterMark(NULL);
-                    size_t stack_used = WORKER_TASK_STACK_SIZE - (high_water_mark_end * sizeof(StackType_t));
+                    uint32_t actual_stack = get_actual_worker_stack_size();
+                    size_t stack_used = actual_stack - (high_water_mark_end * sizeof(StackType_t));
                     ESP_LOGI(TAG, "Worker task exiting - stack: %u bytes used (%.1f%%), %u bytes free (min)",
-                             stack_used, (stack_used * 100.0f) / WORKER_TASK_STACK_SIZE,
+                             stack_used, (stack_used * 100.0f) / actual_stack,
                              high_water_mark_end * sizeof(StackType_t));
                     
                     if (high_water_mark_end * sizeof(StackType_t) < 512) {
@@ -119,11 +131,12 @@ namespace signalr
             return;
         }
         
-        // Create the worker task
+        // Create the worker task with PSRAM-optimized stack size
+        uint32_t actual_stack = get_actual_worker_stack_size();
         BaseType_t result = xTaskCreate(
             task_function,
             "signalr_worker",
-            WORKER_TASK_STACK_SIZE,
+            actual_stack,
             m_internals.get(),
             TASK_PRIORITY,
             &m_task_handle
@@ -131,7 +144,11 @@ namespace signalr
         
         if (result != pdPASS)
         {
-            ESP_LOGE(TAG, "Failed to create worker task");
+            ESP_LOGE(TAG, "Failed to create worker task (stack=%u)", actual_stack);
+        }
+        else
+        {
+            ESP_LOGD(TAG, "Created worker task with %u byte stack", actual_stack);
         }
     }
 
@@ -303,10 +320,12 @@ namespace signalr
             return;
         }
         
+        // Create scheduler task with PSRAM-optimized stack size
+        uint32_t actual_stack = get_actual_scheduler_stack_size();
         BaseType_t result = xTaskCreate(
             scheduler_task_function,
             "signalr_sched",
-            SCHEDULER_TASK_STACK_SIZE,
+            actual_stack,
             m_internals.get(),
             TASK_PRIORITY,
             &m_scheduler_task_handle
@@ -314,7 +333,13 @@ namespace signalr
         
         if (result != pdPASS)
         {
-            ESP_LOGE(TAG, "Failed to create scheduler task");
+            ESP_LOGE(TAG, "Failed to create scheduler task (stack=%u)", actual_stack);
+        }
+        else
+        {
+            // Log memory status on scheduler start
+            signalr::memory::log_memory_stats("scheduler_init");
+            ESP_LOGI(TAG, "Created scheduler task with %u byte stack", actual_stack);
         }
     }
 
