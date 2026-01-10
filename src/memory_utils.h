@@ -313,15 +313,16 @@ inline size_t get_recommended_stack_size(const char* task_type) {
     
     if (strcmp(task_type, "callback") == 0) {
         // Callback task: JSON parsing, user handlers
-        return has_psram ? 8192 : 5120;  // 8KB with PSRAM, 5KB without
+        // OPTIMIZED: Reduced to save internal SRAM - these tasks are short-lived
+        return has_psram ? 6144 : 4096;  // 6KB with PSRAM, 4KB without (was 8KB/5KB)
     }
     else if (strcmp(task_type, "worker") == 0) {
         // Worker task: general processing
-        return has_psram ? 6144 : 4096;  // 6KB with PSRAM, 4KB without
+        return has_psram ? 4096 : 3072;  // 4KB with PSRAM, 3KB without (was 6KB/4KB)
     }
     else if (strcmp(task_type, "scheduler") == 0) {
         // Scheduler task: lightweight
-        return has_psram ? 6144 : 4096;  // 6KB with PSRAM, 4KB without
+        return has_psram ? 4096 : 3072;  // 4KB with PSRAM, 3KB without (was 6KB/4KB)
     }
     else if (strcmp(task_type, "reconnect") == 0) {
         // Reconnect task: CRITICAL - runs entire connection flow synchronously!

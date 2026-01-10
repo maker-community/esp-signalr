@@ -100,17 +100,6 @@ namespace {
         }();
         return ex;
     }
-    
-    std::exception_ptr get_task_creation_failed_exception() {
-        static std::exception_ptr ex = []() {
-            try {
-                throw std::runtime_error("Task creation failed");
-            } catch (...) {
-                return std::current_exception();
-            }
-        }();
-        return ex;
-    }
 }
 
 // Configuration constants - OPTIMIZED FOR ESP32 MEMORY CONSTRAINTS
@@ -467,11 +456,14 @@ void esp32_websocket_client::try_deliver_message() {
     };
 
     bool scheduled = false;
-    if (m_callback_exec_limiter && xSemaphoreTake(m_callback_exec_limiter, 0) == pdTRUE)
+    // Wait up to 500ms for a task slot instead of immediately failing
+    // This prevents message loss when callback tasks are still completing
+    if (m_callback_exec_limiter && xSemaphoreTake(m_callback_exec_limiter, pdMS_TO_TICKS(500)) == pdTRUE)
     {
         // OPTIMIZED: Use dynamic stack size based on PSRAM availability
         uint32_t task_stack = signalr::memory::get_recommended_stack_size("callback");
         
+        // First try regular task creation
         if (xTaskCreate(task, "signalr_cb_exec", task_stack, payload, CALLBACK_TASK_PRIORITY, nullptr) == pdPASS)
         {
             scheduled = true;
@@ -479,31 +471,68 @@ void esp32_websocket_client::try_deliver_message() {
         }
         else
         {
-            // task creation failed; release permit
+            // Task creation failed due to low memory
+            // Execute callback inline on current task (callback_processor_task has sufficient stack)
+            // This is safe because callback_processor_task was specifically designed with extra stack
+            ESP_LOGW(TAG, "Task creation failed, executing callback inline (stack=%u)", task_stack);
+            
+            try
+            {
+                payload->cb(payload->msg, nullptr);
+                scheduled = true;  // Mark as handled
+                ESP_LOGD(TAG, "Inline callback execution completed");
+            }
+            catch (const std::exception& e)
+            {
+                ESP_LOGE(TAG, "Inline callback exception: %s", e.what());
+                scheduled = true;  // Still mark as handled to prevent infinite retry
+            }
+            catch (...)
+            {
+                ESP_LOGE(TAG, "Inline callback unknown exception");
+                scheduled = true;
+            }
+            
+            // Release the semaphore since we executed inline
             xSemaphoreGive(m_callback_exec_limiter);
-            ESP_LOGE(TAG, "Task creation failed (stack=%u)", task_stack);
+            delete payload;
+            payload = nullptr;
         }
     }
 
-    if (!scheduled)
+    if (!scheduled && payload)
     {
-        // CRITICAL: DO NOT execute callback inline - causes stack overflow!
-        // When task creation fails, we must drop the message to prevent pthread stack overflow
-        ESP_LOGE(TAG, "CRITICAL: Task creation failed, dropping message to prevent stack overflow!");
-        ESP_LOGE(TAG, "         Message size: %d bytes", payload->msg.size());
+        // When task creation fails, put the message back in the queue for retry
+        // This is safer than dropping the message or causing stack overflow with inline execution
+        ESP_LOGW(TAG, "Task creation failed, re-queuing message for retry");
+        ESP_LOGW(TAG, "         Message size: %zu bytes", payload->msg.size());
         
-        // Try to notify caller about the failure (safe exception path)
-        try {
-            payload->cb("", get_task_creation_failed_exception());
-        } catch (...) {
-            // Ignore any exception during error notification
-            ESP_LOGE(TAG, "Failed to notify callback about task failure");
+        {
+            std::lock_guard<std::mutex> queue_lock(m_queue_mutex);
+            std::lock_guard<std::mutex> cb_lock(m_callback_mutex);
+            
+            // Put message back at front of queue (it was originally at front)
+            std::queue<std::string> temp_queue;
+            temp_queue.push(std::move(payload->msg));
+            while (!m_message_queue.empty()) {
+                temp_queue.push(std::move(m_message_queue.front()));
+                m_message_queue.pop();
+            }
+            m_message_queue = std::move(temp_queue);
+            
+            // Restore the callback so it can be retried
+            if (!m_pending_receive_callback) {
+                m_pending_receive_callback = std::move(payload->cb);
+            }
         }
         
-        delete payload; // Clean up
+        delete payload; // Clean up payload
         
         // Log memory status to help diagnose the issue
-        signalr::memory::log_memory_stats("task_creation_failed");
+        signalr::memory::log_memory_stats("task_creation_retry");
+        
+        // Wait a bit before next attempt to allow memory to be freed
+        vTaskDelay(pdMS_TO_TICKS(100));
     }
 }
 
@@ -688,7 +717,7 @@ void esp32_websocket_client::callback_processor_task(void* param) {
             // The loop continues as long as there's work to potentially do
             int message_count = 0;
             int idle_rounds = 0;
-            const int MAX_IDLE_ROUNDS = 50; // 50 * 10ms = 500ms max idle
+            const int MAX_IDLE_ROUNDS = 200; // 200 * 10ms = 2000ms max idle (increased from 500ms)
             
             while (client->m_callback_task_running && idle_rounds < MAX_IDLE_ROUNDS) {
                 // OPTIMIZED: Reduced stack monitoring frequency to every 20 messages
@@ -762,8 +791,11 @@ void esp32_websocket_client::start_callback_processor() {
     
     m_callback_task_running = true;
     
-    // OPTIMIZED: Use dynamic stack size based on PSRAM availability
+    // Use larger stack for callback processor since it may execute callbacks inline
+    // when task creation fails due to low memory
     uint32_t stack_size = signalr::memory::get_recommended_stack_size("callback");
+    // Add extra 2KB for inline callback execution safety margin
+    stack_size += 2048;
     
     BaseType_t result = xTaskCreate(
         callback_processor_task,

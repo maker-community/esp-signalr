@@ -47,7 +47,8 @@ namespace signalr
         SIGNALRCLIENT_API std::map<std::string, std::string>& __cdecl get_http_headers() noexcept;
         SIGNALRCLIENT_API void __cdecl set_http_headers(const std::map<std::string, std::string>& http_headers);
         SIGNALRCLIENT_API void __cdecl set_scheduler(std::shared_ptr<scheduler> scheduler);
-        SIGNALRCLIENT_API const std::shared_ptr<scheduler>& __cdecl get_scheduler() const noexcept;
+        // NOTE: Non-const due to lazy initialization - scheduler is created on first access
+        SIGNALRCLIENT_API std::shared_ptr<scheduler> __cdecl get_scheduler();
         SIGNALRCLIENT_API void set_handshake_timeout(std::chrono::milliseconds);
         SIGNALRCLIENT_API std::chrono::milliseconds get_handshake_timeout() const noexcept;
         SIGNALRCLIENT_API void set_server_timeout(std::chrono::milliseconds);
