@@ -104,16 +104,21 @@ namespace signalr
         auto connection = weak_connection.lock();
         if (connection && connection->get_connection_state() != connection_state::disconnected)
         {
+            ESP_LOGE("HUB_CONN", "on('%s') FAILED: connection not in disconnected state (state=%d)", 
+                     event_name.c_str(), (int)connection->get_connection_state());
             throw signalr_exception("can't register a handler if the connection is not in a disconnected state");
         }
 
         if (m_subscriptions.find(event_name) != m_subscriptions.end())
         {
+            ESP_LOGE("HUB_CONN", "on('%s') FAILED: handler already registered", event_name.c_str());
             throw signalr_exception(
                 "an action for this event has already been registered. event name: " + event_name);
         }
 
         m_subscriptions.insert({event_name, handler});
+        ESP_LOGI("HUB_CONN", "on('%s') SUCCESS: handler registered, total subscriptions=%d", 
+                 event_name.c_str(), (int)m_subscriptions.size());
     }
 
     void hub_connection_impl::start(std::function<void(std::exception_ptr)> callback) noexcept
@@ -456,7 +461,16 @@ namespace signalr
 
             ESP_LOGI("HUB_CONN", "process_message: Resetting server timeout...");
             reset_server_timeout();
+            
+            // Ensure message has record separator for proper parsing
+            // WebSocket adapter may strip the 0x1E record separator
+            if (response.find(record_separator) == std::string::npos) {
+                ESP_LOGW("HUB_CONN", "process_message: Adding missing record_separator to message");
+                response.push_back(record_separator);
+            }
+            
             auto messages = m_protocol->parse_messages(response);
+            ESP_LOGI("HUB_CONN", "process_message: Parsed %d message(s)", (int)messages.size());
 
             for (const auto& val : messages)
             {
@@ -471,14 +485,19 @@ namespace signalr
                 case message_type::invocation:
                 {
                     auto invocation = static_cast<invocation_message*>(val.get());
+                    ESP_LOGI("HUB_CONN", "Looking for handler: target='%s', subscriptions count=%d", 
+                             invocation->target.c_str(), (int)m_subscriptions.size());
                     auto event = m_subscriptions.find(invocation->target);
                     if (event != m_subscriptions.end())
                     {
+                        ESP_LOGI("HUB_CONN", "Handler FOUND for '%s', calling...", invocation->target.c_str());
                         const auto& args = invocation->arguments;
                         event->second(args);
+                        ESP_LOGI("HUB_CONN", "Handler '%s' call completed", invocation->target.c_str());
                     }
                     else
                     {
+                        ESP_LOGW("HUB_CONN", "Handler NOT FOUND for '%s'", invocation->target.c_str());
                         m_logger.log(trace_level::info, "handler not found");
                     }
                     break;
