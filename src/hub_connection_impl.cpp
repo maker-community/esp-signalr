@@ -15,10 +15,24 @@
 #include "json_helpers.h"
 #include "websocket_client.h"
 #include "signalr_default_scheduler.h"
+#include "memory_utils.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
 #include "esp_log.h"
+
+// OPTIMIZED: Reconnect task stack size - dynamically determined
+namespace {
+    inline uint32_t get_reconnect_stack_size() {
+#ifdef CONFIG_SIGNALR_RECONNECT_STACK_SIZE
+        // Use Kconfig value if specified
+        return CONFIG_SIGNALR_RECONNECT_STACK_SIZE;
+#else
+        // Fall back to dynamic sizing based on PSRAM availability
+        return signalr::memory::get_recommended_stack_size("reconnect");
+#endif
+    }
+}
 
 namespace signalr
 {
@@ -863,7 +877,11 @@ namespace signalr
         auto reconnect_cts = params->reconnect_cts;
         delete params;  // Free the parameter struct
 
-        ESP_LOGI("HUB_CONN", "reconnect_task: started for attempt %d", attempt);
+        // Stack monitoring - CRITICAL for debugging stack overflow
+        UBaseType_t stack_start = uxTaskGetStackHighWaterMark(NULL);
+        uint32_t stack_allocated = get_reconnect_stack_size();
+        ESP_LOGI("HUB_CONN", "reconnect_task: started for attempt %d (stack: %u allocated, %u free)", 
+                 attempt, stack_allocated, stack_start * sizeof(StackType_t));
 
         // Check if reconnection was cancelled
         if (reconnect_cts->is_canceled())
@@ -1020,12 +1038,19 @@ namespace signalr
         // Create parameters for the reconnect task
         auto* params = new reconnect_task_params{weak_connection, attempt, reconnect_cts};
 
+        // OPTIMIZED: Use dynamic stack size based on PSRAM availability
+        // CRITICAL: Must be at least 12KB for the deep call chain in start()
+        uint32_t reconnect_stack = get_reconnect_stack_size();
+        
+        ESP_LOGI("HUB_CONN", "Creating reconnect task with %u byte stack (PSRAM: %s)", 
+                 reconnect_stack, 
+                 signalr::memory::is_psram_available() ? "yes" : "no");
+        
         // Create a dedicated task for reconnection with sufficient stack
-        // Stack size: 8KB - enough for WebSocket creation, JSON parsing, etc.
         BaseType_t result = xTaskCreate(
             reconnect_task_function,
             "signalr_reconn",
-            8192,  // 8KB stack - sufficient for deep call chains
+            reconnect_stack,
             params,
             5,     // Same priority as other SignalR tasks
             NULL
@@ -1033,10 +1058,14 @@ namespace signalr
 
         if (result != pdPASS)
         {
-            ESP_LOGE("HUB_CONN", "Failed to create reconnect task!");
+            ESP_LOGE("HUB_CONN", "Failed to create reconnect task (stack=%u)!", reconnect_stack);
             delete params;
             m_reconnecting.store(false);
             m_reconnect_attempts.store(0);
+        }
+        else
+        {
+            ESP_LOGD("HUB_CONN", "Created reconnect task with %u byte stack", reconnect_stack);
         }
     }
 

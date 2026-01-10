@@ -86,24 +86,28 @@ namespace signalr
                 // stop waits for the receive loop to complete so the transport should never be null
                 assert(transport != nullptr);
 
-                ESP_LOGI("WS_TRANSPORT", "receive_loop: Acquiring m_start_stop_lock...");
+                ESP_LOGD("WS_TRANSPORT", "receive_loop: Acquiring m_start_stop_lock...");
                 bool disconnected;
                 bool got_lock = false;
-                // Optimized: Reduce retry count for faster processing
-                for (int i = 0; i < 10 && !got_lock; ++i) {
+                // Increased retry count: during reconnection, locks may be held longer
+                // 50 retries * 2ms = 100ms max wait, which is acceptable
+                for (int i = 0; i < 50 && !got_lock; ++i) {
                     if (transport->m_start_stop_lock.try_lock()) {
                         got_lock = true;
                         break;
                     }
-                    vTaskDelay(pdMS_TO_TICKS(1));
+                    vTaskDelay(pdMS_TO_TICKS(2));
                 }
 
                 if (got_lock) {
                     disconnected = transport->m_disconnected;
                     transport->m_start_stop_lock.unlock();
                 } else {
+                    // Still read the value even without lock - better than blocking forever
+                    // This is safe because we only read a boolean atomically
                     disconnected = transport->m_disconnected;
-                    ESP_LOGW("WS_TRANSPORT", "Lock timeout");
+                    // This is expected during handshake when start() holds the lock
+                    ESP_LOGD("WS_TRANSPORT", "Lock busy (100ms), continuing with unlocked read (normal during handshake)");
                 }
                 if (disconnected)
                 {
