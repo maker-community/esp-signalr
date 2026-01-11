@@ -12,6 +12,10 @@
 
 namespace signalr
 {
+    // Forward declaration for friend function
+    struct disconnect_task_params;
+    static void disconnect_cleanup_task(void* param);
+
     class websocket_transport : public transport, public std::enable_shared_from_this<websocket_transport>
     {
     public:
@@ -33,6 +37,9 @@ namespace signalr
         void send(const std::string& payload, transfer_format transfer_format, std::function<void(std::exception_ptr)> callback) noexcept override;
 
         void on_receive(std::function<void(std::string&&, std::exception_ptr)>) override;
+
+        // Allow disconnect cleanup task to access m_close_callback
+        friend void disconnect_cleanup_task(void* param);
 
     private:
         websocket_transport(const std::function<std::shared_ptr<websocket_client>(const signalr_client_config&)>& websocket_client_factory,

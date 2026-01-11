@@ -70,9 +70,6 @@ private:
     TaskHandle_t m_callback_task;
     SemaphoreHandle_t m_callback_semaphore;
     volatile bool m_callback_task_running;
-
-    // Limit concurrent per-message callback executor tasks to avoid exhaustion
-    SemaphoreHandle_t m_callback_exec_limiter;
     
     // Message queue for bridging event-driven to callback model
     std::queue<std::string> m_message_queue;
