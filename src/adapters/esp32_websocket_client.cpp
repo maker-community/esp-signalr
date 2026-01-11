@@ -207,9 +207,11 @@ void esp32_websocket_client::start(const std::string& url, std::function<void(st
     ws_cfg.uri = url.c_str();
     ws_cfg.buffer_size = WEBSOCKET_BUFFER_SIZE;
     ws_cfg.task_stack = WEBSOCKET_TASK_STACK_SIZE;
-    // Set network timeout to prevent premature disconnection
-    // This should be longer than the SignalR server_timeout to allow SignalR-level timeout handling
-    ws_cfg.network_timeout_ms = 120000;  // 120 seconds (2x the SignalR server_timeout of 60s)
+    // Set network timeout for underlying TCP operations
+    // This controls how long the ESP-TLS layer waits for TCP connection/read/write
+    // Using a shorter timeout to ensure faster failure detection when server is unreachable
+    // Once connected, SignalR-level keepalive will maintain the connection
+    ws_cfg.network_timeout_ms = 10000;  // 10 seconds for network operations
     // CRITICAL: Disable WebSocket-level auto-reconnect so SignalR layer can handle reconnection
     // If WebSocket auto-reconnects, SignalR's handle_disconnection() won't be called
     ws_cfg.disable_auto_reconnect = true;  // Completely disable auto-reconnect
@@ -251,6 +253,8 @@ void esp32_websocket_client::start(const std::string& url, std::function<void(st
         // Otherwise the client keeps running and may connect later, causing state inconsistency.
         if (m_client) {
             ESP_LOGI(TAG, "Cleaning up WebSocket client after timeout...");
+            // First try graceful close with short timeout to signal the task to stop
+            esp_websocket_client_close(m_client, pdMS_TO_TICKS(500));
             esp_websocket_client_stop(m_client);
             esp_websocket_client_destroy(m_client);
             m_client = nullptr;
