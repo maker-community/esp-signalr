@@ -104,12 +104,6 @@ namespace {
 
 // Configuration constants - OPTIMIZED FOR ESP32 MEMORY CONSTRAINTS
 namespace {
-    // Structure to pass callback data to FreeRTOS task
-    struct callback_payload {
-        std::string msg;
-        std::function<void(const std::string&, std::exception_ptr)> cb;
-        SemaphoreHandle_t limiter;
-    };
     // Reduced from 4096 to 2048 - SignalR messages are typically small
     constexpr size_t WEBSOCKET_BUFFER_SIZE = 2048;
     // Increased to 8192 - ESP32 WebSocket library needs more stack during reconnection
@@ -128,21 +122,16 @@ namespace {
 #ifdef CONFIG_SIGNALR_CONNECTION_TIMEOUT_MS
     constexpr uint32_t CONNECTION_TIMEOUT_MS = CONFIG_SIGNALR_CONNECTION_TIMEOUT_MS;
 #else
-    constexpr uint32_t CONNECTION_TIMEOUT_MS = 15000;
+    // SHORT timeout (5 seconds) - if we can't connect quickly, let the app retry later
+    // This prevents blocking the main loop for too long during reconnection.
+    // The main loop polls every second and will retry if needed.
+    constexpr uint32_t CONNECTION_TIMEOUT_MS = 5000;
 #endif
 #ifdef CONFIG_SIGNALR_MAX_QUEUE_SIZE
     constexpr size_t MAX_MESSAGE_QUEUE_SIZE = CONFIG_SIGNALR_MAX_QUEUE_SIZE;
 #else
     // Reduced from 50 to 20 - prevents excessive memory usage
     constexpr size_t MAX_MESSAGE_QUEUE_SIZE = 20;
-#endif
-
-#ifdef CONFIG_SIGNALR_MAX_CALLBACK_TASKS
-    constexpr UBaseType_t MAX_CALLBACK_EXEC_TASKS = CONFIG_SIGNALR_MAX_CALLBACK_TASKS;
-#else
-    // OPTIMIZED: Reduced from 3 to 2 - saves ~5KB stack per task
-    // Most scenarios only need 1-2 concurrent callbacks
-    constexpr UBaseType_t MAX_CALLBACK_EXEC_TASKS = 2;
 #endif
     
     // Connection retry parameters
@@ -162,7 +151,6 @@ esp32_websocket_client::esp32_websocket_client(const signalr_client_config& conf
     , m_callback_task(nullptr)
     , m_callback_semaphore(nullptr)
     , m_callback_task_running(false)
-    , m_callback_exec_limiter(nullptr)
     , m_is_connected(false)
     , m_is_stopping(false) {
     
@@ -176,11 +164,6 @@ esp32_websocket_client::esp32_websocket_client(const signalr_client_config& conf
     if (!m_callback_semaphore) {
         ESP_LOGE(TAG, "Failed to create callback semaphore");
     }
-
-    m_callback_exec_limiter = xSemaphoreCreateCounting(MAX_CALLBACK_EXEC_TASKS, MAX_CALLBACK_EXEC_TASKS);
-    if (!m_callback_exec_limiter) {
-        ESP_LOGE(TAG, "Failed to create callback exec limiter semaphore");
-    }
 }
 
 esp32_websocket_client::~esp32_websocket_client() {
@@ -193,9 +176,6 @@ esp32_websocket_client::~esp32_websocket_client() {
     }
     if (m_callback_semaphore) {
         vSemaphoreDelete(m_callback_semaphore);
-    }
-    if (m_callback_exec_limiter) {
-        vSemaphoreDelete(m_callback_exec_limiter);
     }
 }
 
@@ -266,6 +246,14 @@ void esp32_websocket_client::start(const std::string& url, std::function<void(st
         callback(nullptr);
     } else {
         ESP_LOGE(TAG, "Connection timeout or failed");
+        // CRITICAL: Clean up the WebSocket client on timeout!
+        // Otherwise the client keeps running and may connect later, causing state inconsistency.
+        if (m_client) {
+            ESP_LOGI(TAG, "Cleaning up WebSocket client after timeout...");
+            esp_websocket_client_stop(m_client);
+            esp_websocket_client_destroy(m_client);
+            m_client = nullptr;
+        }
         callback(get_connection_timeout_exception());
     }
 }
@@ -425,114 +413,21 @@ void esp32_websocket_client::try_deliver_message() {
         ESP_LOGD(TAG, "Deliver: %d bytes, queue: %zu", message.length(), m_message_queue.size());
     }
     
-    // OPTIMIZED: Heap-allocate payload with move semantics
-    auto* payload = new callback_payload{std::move(message), std::move(callback), m_callback_exec_limiter};
-    
-    // OPTIMIZED: Simplified task function with reduced stack requirements
-    auto task = [](void* arg)
+    // SIMPLIFIED: Execute callback inline instead of creating a new task for each message
+    // This saves ~6KB stack per callback and avoids task creation failures under memory pressure
+    // The callback_processor_task already provides sufficient stack for callback execution
+    try
     {
-        std::unique_ptr<callback_payload> payload(static_cast<callback_payload*>(arg));
-        
-        // Execute callback with minimal stack overhead
-        try
-        {
-            payload->cb(payload->msg, nullptr);
-        }
-        catch (const std::exception& e)
-        {
-            ESP_LOGE(TAG, "Callback exception: %s", e.what());
-        }
-        catch (...)
-        {
-            ESP_LOGE(TAG, "Callback unknown exception");
-        }
-
-        if (payload->limiter)
-        {
-            xSemaphoreGive(payload->limiter);
-        }
-
-        vTaskDelete(nullptr);
-    };
-
-    bool scheduled = false;
-    // Wait up to 500ms for a task slot instead of immediately failing
-    // This prevents message loss when callback tasks are still completing
-    if (m_callback_exec_limiter && xSemaphoreTake(m_callback_exec_limiter, pdMS_TO_TICKS(500)) == pdTRUE)
-    {
-        // OPTIMIZED: Use dynamic stack size based on PSRAM availability
-        uint32_t task_stack = signalr::memory::get_recommended_stack_size("callback");
-        
-        // First try regular task creation
-        if (xTaskCreate(task, "signalr_cb_exec", task_stack, payload, CALLBACK_TASK_PRIORITY, nullptr) == pdPASS)
-        {
-            scheduled = true;
-            ESP_LOGD(TAG, "Scheduled callback task (stack=%u)", task_stack);
-        }
-        else
-        {
-            // Task creation failed due to low memory
-            // Execute callback inline on current task (callback_processor_task has sufficient stack)
-            // This is safe because callback_processor_task was specifically designed with extra stack
-            ESP_LOGW(TAG, "Task creation failed, executing callback inline (stack=%u)", task_stack);
-            
-            try
-            {
-                payload->cb(payload->msg, nullptr);
-                scheduled = true;  // Mark as handled
-                ESP_LOGD(TAG, "Inline callback execution completed");
-            }
-            catch (const std::exception& e)
-            {
-                ESP_LOGE(TAG, "Inline callback exception: %s", e.what());
-                scheduled = true;  // Still mark as handled to prevent infinite retry
-            }
-            catch (...)
-            {
-                ESP_LOGE(TAG, "Inline callback unknown exception");
-                scheduled = true;
-            }
-            
-            // Release the semaphore since we executed inline
-            xSemaphoreGive(m_callback_exec_limiter);
-            delete payload;
-            payload = nullptr;
-        }
+        callback(message, nullptr);
+        ESP_LOGD(TAG, "Callback executed inline successfully");
     }
-
-    if (!scheduled && payload)
+    catch (const std::exception& e)
     {
-        // When task creation fails, put the message back in the queue for retry
-        // This is safer than dropping the message or causing stack overflow with inline execution
-        ESP_LOGW(TAG, "Task creation failed, re-queuing message for retry");
-        ESP_LOGW(TAG, "         Message size: %zu bytes", payload->msg.size());
-        
-        {
-            std::lock_guard<std::mutex> queue_lock(m_queue_mutex);
-            std::lock_guard<std::mutex> cb_lock(m_callback_mutex);
-            
-            // Put message back at front of queue (it was originally at front)
-            std::queue<std::string> temp_queue;
-            temp_queue.push(std::move(payload->msg));
-            while (!m_message_queue.empty()) {
-                temp_queue.push(std::move(m_message_queue.front()));
-                m_message_queue.pop();
-            }
-            m_message_queue = std::move(temp_queue);
-            
-            // Restore the callback so it can be retried
-            if (!m_pending_receive_callback) {
-                m_pending_receive_callback = std::move(payload->cb);
-            }
-        }
-        
-        delete payload; // Clean up payload
-        
-        // Log memory status to help diagnose the issue
-        signalr::memory::log_memory_stats("task_creation_retry");
-        
-        // Wait a bit before next attempt to allow memory to be freed
-        vTaskDelay(pdMS_TO_TICKS(100));
+        ESP_LOGE(TAG, "Callback exception: %s", e.what());
+    }
+    catch (...)
+    {
+        ESP_LOGE(TAG, "Callback unknown exception");
     }
 }
 
