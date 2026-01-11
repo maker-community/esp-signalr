@@ -104,8 +104,9 @@ namespace {
 
 // Configuration constants - OPTIMIZED FOR ESP32 MEMORY CONSTRAINTS
 namespace {
-    // Reduced from 4096 to 2048 - SignalR messages are typically small
-    constexpr size_t WEBSOCKET_BUFFER_SIZE = 2048;
+    // Increased to 4096 - JWT tokens can be ~1600+ bytes, plus URL and headers
+    // The transport layer uses this for WebSocket handshake request generation
+    constexpr size_t WEBSOCKET_BUFFER_SIZE = 4096;
     // Increased to 8192 - ESP32 WebSocket library needs more stack during reconnection
     // This prevents stack overflow during SSL handshake and error handling
     constexpr size_t WEBSOCKET_TASK_STACK_SIZE = 8192;
