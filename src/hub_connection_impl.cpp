@@ -792,8 +792,8 @@ namespace signalr
 
     void hub_connection_impl::handle_disconnection(std::exception_ptr exception)
     {
-        // Use ESP_LOGE to ensure this log is always visible for debugging
-        ESP_LOGE("HUB_CONN", ">>> handle_disconnection CALLED <<<");
+        // Log disconnection handling - this is a normal flow when connection drops
+        ESP_LOGI("HUB_CONN", ">>> handle_disconnection CALLED <<<");
         m_logger.log(trace_level::info, "handle_disconnection: connection lost, analyzing reconnection options...");
         
         // start may be waiting on the handshake response so we complete it here, this no-ops if already set

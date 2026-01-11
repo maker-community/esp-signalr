@@ -7,6 +7,7 @@
 #include "signalr_default_scheduler.h"
 #include "memory_utils.h"
 #include "esp_log.h"
+#include "freertos/idf_additions.h"  // For xTaskCreateWithCaps
 #include <assert.h>
 
 static const char* TAG = "signalr_scheduler";
@@ -45,6 +46,20 @@ namespace {
     
     inline uint32_t get_actual_scheduler_stack_size() {
         return signalr::memory::get_recommended_stack_size("scheduler");
+    }
+    
+    // Get memory capability flags for task stack allocation
+    // Prefers PSRAM when available to save internal RAM for critical tasks
+    inline UBaseType_t get_task_memory_caps() {
+#ifdef CONFIG_SPIRAM
+        // Check if PSRAM is actually available and has reasonable space
+        size_t psram_free = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+        if (psram_free > 50 * 1024) {  // At least 50KB free in PSRAM
+            return MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
+        }
+#endif
+        // Fallback to internal RAM
+        return MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
     }
 }
 
@@ -87,7 +102,9 @@ namespace signalr
                         ESP_LOGW(TAG, "WARNING: Worker task had very low stack! Risk of overflow!");
                     }
                     
-                    vTaskDelete(NULL);
+                    // Use vTaskDeleteWithCaps if task was created with xTaskCreateWithCaps
+                    // This properly frees the PSRAM-allocated stack
+                    vTaskDeleteWithCaps(NULL);
                     return;
                 }
                 
@@ -131,24 +148,29 @@ namespace signalr
             return;
         }
         
-        // Create the worker task with PSRAM-optimized stack size
+        // Create the worker task - stack in PSRAM (if available) to save internal RAM
+        // Note: xTaskCreateWithCaps automatically puts TCB in internal RAM
         uint32_t actual_stack = get_actual_worker_stack_size();
-        BaseType_t result = xTaskCreate(
+        UBaseType_t mem_caps = get_task_memory_caps();
+        
+        BaseType_t result = xTaskCreateWithCaps(
             task_function,
             "signalr_worker",
             actual_stack,
             m_internals.get(),
             TASK_PRIORITY,
-            &m_task_handle
+            &m_task_handle,
+            mem_caps
         );
         
-        if (result != pdPASS)
-        {
-            ESP_LOGE(TAG, "Failed to create worker task (stack=%u)", actual_stack);
-        }
-        else
-        {
-            ESP_LOGD(TAG, "Created worker task with %u byte stack", actual_stack);
+        if (result == pdPASS) {
+            const char* mem_type = (mem_caps & MALLOC_CAP_SPIRAM) ? "PSRAM" : "internal";
+            ESP_LOGI(TAG, "Created worker task with %u byte stack (%s)", actual_stack, mem_type);
+        } else {
+            ESP_LOGE(TAG, "Failed to create worker task (stack=%u, free_internal=%u, free_psram=%u)",
+                     actual_stack,
+                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
         }
     }
 
@@ -230,7 +252,8 @@ namespace signalr
             if (internals->m_closed && internals->m_callbacks.empty())
             {
                 xSemaphoreGive(internals->m_callback_mutex);
-                vTaskDelete(NULL);
+                // Use vTaskDeleteWithCaps to properly free PSRAM-allocated stack
+                vTaskDeleteWithCaps(NULL);
                 return;
             }
             
@@ -320,26 +343,30 @@ namespace signalr
             return;
         }
         
-        // Create scheduler task with PSRAM-optimized stack size
+        // Create scheduler task - stack in PSRAM (if available) to save internal RAM
+        // Note: xTaskCreateWithCaps automatically puts TCB in internal RAM
         uint32_t actual_stack = get_actual_scheduler_stack_size();
-        BaseType_t result = xTaskCreate(
+        UBaseType_t mem_caps = get_task_memory_caps();
+        
+        BaseType_t result = xTaskCreateWithCaps(
             scheduler_task_function,
             "signalr_sched",
             actual_stack,
             m_internals.get(),
             TASK_PRIORITY,
-            &m_scheduler_task_handle
+            &m_scheduler_task_handle,
+            mem_caps
         );
         
-        if (result != pdPASS)
-        {
-            ESP_LOGE(TAG, "Failed to create scheduler task (stack=%u)", actual_stack);
-        }
-        else
-        {
-            // Log memory status on scheduler start
+        if (result == pdPASS) {
+            const char* mem_type = (mem_caps & MALLOC_CAP_SPIRAM) ? "PSRAM" : "internal";
             signalr::memory::log_memory_stats("scheduler_init");
-            ESP_LOGI(TAG, "Created scheduler task with %u byte stack", actual_stack);
+            ESP_LOGI(TAG, "Created scheduler task with %u byte stack (%s)", actual_stack, mem_type);
+        } else {
+            ESP_LOGE(TAG, "Failed to create scheduler task (stack=%u, free_internal=%u, free_psram=%u)",
+                     actual_stack,
+                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
         }
     }
 
