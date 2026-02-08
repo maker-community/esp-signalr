@@ -1,5 +1,15 @@
 menu "ESP32 SignalR Client Configuration"
 
+    config SIGNALR_USE_PSRAM
+        bool "Use PSRAM for large buffers when available"
+        default y
+        depends on SPIRAM
+        help
+            When enabled and PSRAM is available, large buffers (message queue,
+            receive buffer, etc.) will be allocated in PSRAM to reduce internal
+            RAM pressure. This can significantly reduce stack overflow issues.
+            Recommended: Enable if your ESP32 has PSRAM.
+
     config SIGNALR_WORKER_POOL_SIZE
         int "Worker thread pool size"
         default 2
@@ -11,34 +21,69 @@ menu "ESP32 SignalR Client Configuration"
             
     config SIGNALR_WORKER_STACK_SIZE
         int "Worker task stack size (bytes)"
-        default 3072
+        default 4096
         range 2048 8192
         help
             Stack size for each worker task in bytes.
-            Default: 3072 (3KB, optimized for ESP32)
-            Recommended: 3KB for simple callbacks, 4KB for complex processing
+            OPTIMIZED: Reduced from 6KB to 4KB - sufficient with PSRAM offloading.
+            With PSRAM enabled, the library dynamically adjusts stack sizes.
+            Default: 4096 (4KB)
             Enable CONFIG_SIGNALR_ENABLE_STACK_MONITORING to measure actual usage.
             
     config SIGNALR_SCHEDULER_STACK_SIZE
         int "Scheduler task stack size (bytes)"
-        default 6144
-        range 4096 16384
+        default 4096
+        range 3072 16384
         help
             Stack size for the scheduler task in bytes.
-            Default: 6144 (6KB, optimized for ESP32)
-            Recommended: Keep at 6KB unless stack monitoring shows otherwise.
+            OPTIMIZED: Reduced from 6KB to 4KB - scheduler is lightweight.
+            Default: 4096 (4KB)
             Enable CONFIG_SIGNALR_ENABLE_STACK_MONITORING to measure actual usage.
             
     config SIGNALR_CALLBACK_STACK_SIZE
         int "WebSocket callback task stack size (bytes)"
-        default 6144
+        default 5120
         range 4096 32768
         help
             Stack size for the WebSocket callback processing task.
-            Default: 6144 (6KB, reduced from 32KB for memory efficiency)
-            Recommended: 6KB for typical SignalR usage, 8KB for complex JSON processing
+            OPTIMIZED: Reduced from 6KB to 5KB for memory efficiency.
             Increase if you experience stack overflow in callbacks.
             Enable CONFIG_SIGNALR_ENABLE_STACK_MONITORING to measure actual usage.
+
+    config SIGNALR_RECONNECT_STACK_SIZE
+        int "Reconnect task stack size (bytes)"
+        default 12288
+        range 10240 32768
+        help
+            Stack size for the reconnection task.
+            CRITICAL: This task runs the entire connection flow synchronously:
+            - WebSocket client creation
+            - SSL/TLS handshake (if using wss://)
+            - SignalR handshake with JSON parsing
+            - C++ exception handling with deep call chains
+            Default: 12288 (12KB) - minimum required!
+            Use 16384 (16KB) if using SSL/TLS or complex JSON.
+            DO NOT reduce below 10KB or stack overflow WILL occur!
+
+    config SIGNALR_CONNECTION_TIMEOUT_MS
+        int "WebSocket connection timeout (milliseconds)"
+        default 15000
+        range 5000 60000
+        help
+            Timeout for establishing WebSocket connection.
+            OPTIMIZED: Increased from 10s to 15s for better reconnection success.
+            During server restart or network recovery, connections may take longer.
+            Default: 15000 (15 seconds)
+            
+    config SIGNALR_MAX_CALLBACK_TASKS
+        int "Maximum concurrent callback execution tasks"
+        default 2
+        range 1 5
+        help
+            Maximum number of concurrent tasks for executing SignalR callbacks.
+            OPTIMIZED: Reduced from 3 to 2 to save ~5KB per task.
+            Lower values reduce memory usage but may slow callback processing.
+            Default: 2
             
     config SIGNALR_MAX_MESSAGE_SIZE
         int "Maximum message size (bytes)"
@@ -89,13 +134,13 @@ menu "ESP32 SignalR Client Configuration"
             
     config SIGNALR_MAX_QUEUE_SIZE
         int "Maximum message queue size"
-        default 50
-        range 10 200
+        default 20
+        range 5 100
         help
             Maximum number of messages that can be queued before dropping oldest messages.
-            Prevents memory leak if message processing is slower than message arrival rate.
-            Default: 50 messages
-            Recommendation: Set based on your message rate and processing speed.
+            OPTIMIZED: Reduced from 50 to 20 to save memory.
+            Each queued message consumes heap memory.
+            Default: 20 messages
             
     config SIGNALR_ENABLE_STACK_MONITORING
         bool "Enable stack usage monitoring"

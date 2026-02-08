@@ -49,11 +49,27 @@ namespace signalr
 #endif
 
     signalr_client_config::signalr_client_config()
-        : m_handshake_timeout(std::chrono::seconds(15))
+        // NOTE: Initialization order MUST match declaration order in header file!
+        : m_scheduler(nullptr)  // LAZY INIT: don't create scheduler until needed!
+        , m_handshake_timeout(std::chrono::seconds(15))
         , m_server_timeout(std::chrono::seconds(30))
         , m_keepalive_interval(std::chrono::seconds(15))
+        , m_auto_reconnect_enabled(false)
+        , m_max_reconnect_attempts(-1) // -1 means infinite retries
     {
-        m_scheduler = std::make_shared<signalr_default_scheduler>();
+        // IMPORTANT: Do NOT create scheduler here!
+        // Each signalr_default_scheduler creates 1 scheduler task + 2 worker tasks,
+        // consuming ~12KB+ of internal SRAM. With lazy initialization, we avoid
+        // creating multiple schedulers when config objects are copied/replaced.
+        
+        // Default reconnect delays following exponential backoff (similar to JS/C# clients)
+        // 0, 2, 10, 30 seconds
+        m_reconnect_delays = {
+            std::chrono::seconds(0),
+            std::chrono::seconds(2),
+            std::chrono::seconds(10),
+            std::chrono::seconds(30)
+        };
     }
 
     const std::map<std::string, std::string>& signalr_client_config::get_http_headers() const noexcept
@@ -81,8 +97,15 @@ namespace signalr
         m_scheduler = std::move(scheduler);
     }
 
-    const std::shared_ptr<scheduler>& signalr_client_config::get_scheduler() const noexcept
+    // NOTE: This is non-const because of lazy initialization
+    // The scheduler is created on first access to avoid memory waste
+    std::shared_ptr<scheduler> signalr_client_config::get_scheduler()
     {
+        // Lazy initialization: create scheduler only when first accessed
+        if (!m_scheduler)
+        {
+            m_scheduler = std::make_shared<signalr_default_scheduler>();
+        }
         return m_scheduler;
     }
 
@@ -129,5 +152,35 @@ namespace signalr
     std::chrono::milliseconds signalr_client_config::get_keepalive_interval() const noexcept
     {
         return m_keepalive_interval;
+    }
+
+    void signalr_client_config::set_reconnect_delays(const std::vector<std::chrono::milliseconds>& delays)
+    {
+        m_reconnect_delays = delays;
+    }
+
+    const std::vector<std::chrono::milliseconds>& signalr_client_config::get_reconnect_delays() const noexcept
+    {
+        return m_reconnect_delays;
+    }
+
+    void signalr_client_config::set_max_reconnect_attempts(int max_attempts)
+    {
+        m_max_reconnect_attempts = max_attempts;
+    }
+
+    int signalr_client_config::get_max_reconnect_attempts() const noexcept
+    {
+        return m_max_reconnect_attempts;
+    }
+
+    void signalr_client_config::enable_auto_reconnect(bool enable)
+    {
+        m_auto_reconnect_enabled = enable;
+    }
+
+    bool signalr_client_config::is_auto_reconnect_enabled() const noexcept
+    {
+        return m_auto_reconnect_enabled;
     }
 }

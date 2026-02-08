@@ -96,7 +96,9 @@ namespace signalr
         void reset()
         {
             std::lock_guard<std::mutex> lock(m_lock);
-            assert(m_callbacks.empty());
+            // During reconnection, callbacks may still be registered from the previous connection
+            // Instead of asserting, we safely clear them
+            // assert(m_callbacks.empty());  // Disabled: can fail during reconnection
             m_signaled = false;
             m_callbacks.clear();
         }

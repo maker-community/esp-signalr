@@ -1,4 +1,4 @@
-version: "1.0.0"
+version: "1.0.4"
 description: "ESP32 SignalR Client Library - Adapted from Microsoft SignalR-Client-Cpp"
 url: "https://github.com/maker-community/esp-signalr"
 repository: "https://github.com/maker-community/esp-signalr.git"

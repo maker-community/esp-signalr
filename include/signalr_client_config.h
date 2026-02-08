@@ -15,6 +15,7 @@
 #include "_exports.h"
 #include <map>
 #include <string>
+#include <vector>
 #include "scheduler.h"
 #include <memory>
 
@@ -46,13 +47,22 @@ namespace signalr
         SIGNALRCLIENT_API std::map<std::string, std::string>& __cdecl get_http_headers() noexcept;
         SIGNALRCLIENT_API void __cdecl set_http_headers(const std::map<std::string, std::string>& http_headers);
         SIGNALRCLIENT_API void __cdecl set_scheduler(std::shared_ptr<scheduler> scheduler);
-        SIGNALRCLIENT_API const std::shared_ptr<scheduler>& __cdecl get_scheduler() const noexcept;
+        // NOTE: Non-const due to lazy initialization - scheduler is created on first access
+        SIGNALRCLIENT_API std::shared_ptr<scheduler> __cdecl get_scheduler();
         SIGNALRCLIENT_API void set_handshake_timeout(std::chrono::milliseconds);
         SIGNALRCLIENT_API std::chrono::milliseconds get_handshake_timeout() const noexcept;
         SIGNALRCLIENT_API void set_server_timeout(std::chrono::milliseconds);
         SIGNALRCLIENT_API std::chrono::milliseconds get_server_timeout() const noexcept;
         SIGNALRCLIENT_API void set_keepalive_interval(std::chrono::milliseconds);
         SIGNALRCLIENT_API std::chrono::milliseconds get_keepalive_interval() const noexcept;
+
+        // Auto-reconnect settings
+        SIGNALRCLIENT_API void set_reconnect_delays(const std::vector<std::chrono::milliseconds>& delays);
+        SIGNALRCLIENT_API const std::vector<std::chrono::milliseconds>& get_reconnect_delays() const noexcept;
+        SIGNALRCLIENT_API void set_max_reconnect_attempts(int max_attempts);
+        SIGNALRCLIENT_API int get_max_reconnect_attempts() const noexcept;
+        SIGNALRCLIENT_API void enable_auto_reconnect(bool enable);
+        SIGNALRCLIENT_API bool is_auto_reconnect_enabled() const noexcept;
 
     private:
 #ifdef USE_CPPRESTSDK
@@ -66,5 +76,10 @@ namespace signalr
         std::chrono::milliseconds m_handshake_timeout;
         std::chrono::milliseconds m_server_timeout;
         std::chrono::milliseconds m_keepalive_interval;
+
+        // Auto-reconnect settings
+        bool m_auto_reconnect_enabled;
+        std::vector<std::chrono::milliseconds> m_reconnect_delays;
+        int m_max_reconnect_attempts;
     };
 }

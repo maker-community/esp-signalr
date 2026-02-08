@@ -17,6 +17,10 @@
 
 namespace signalr
 {
+    // Forward declaration for reconnect task
+    class hub_connection_impl;
+    struct reconnect_task_params;
+    void reconnect_task_function(void* param);
     class websocket_client;
 
     // Note:
@@ -24,8 +28,18 @@ namespace signalr
     // derives from `std::enable_shared_from_this` the instance has to be owned by a `std::shared_ptr` whenever
     // a member method calls `std::shared_from_this()` otherwise the behavior is undefined. Therefore constructors
     // are private to disallow creating instances directly and factory methods return `std::shared_ptr<connection_impl>`.
+    // Structure to pass reconnect parameters to the task
+    struct reconnect_task_params {
+        std::weak_ptr<hub_connection_impl> weak_connection;
+        int attempt;
+        std::shared_ptr<cancellation_token_source> reconnect_cts;
+    };
+
     class hub_connection_impl : public std::enable_shared_from_this<hub_connection_impl>
     {
+        // Allow reconnect_task_function to access private members
+        friend void reconnect_task_function(void* param);
+
     public:
         static std::shared_ptr<hub_connection_impl> create(const std::string& url, std::unique_ptr<hub_protocol>&& hub_protocol,
             trace_level trace_level, const std::shared_ptr<log_writer>& log_writer, std::function<std::shared_ptr<http_client>(const signalr_client_config&)> http_client_factory,
@@ -72,6 +86,12 @@ namespace signalr
         std::mutex m_stop_callback_lock;
         std::vector<std::function<void(std::exception_ptr)>> m_stop_callbacks;
 
+        // Reconnect state
+        std::atomic<bool> m_reconnecting;
+        std::atomic<int> m_reconnect_attempts;
+        std::shared_ptr<cancellation_token_source> m_reconnect_cts;
+        std::mutex m_reconnect_lock;
+
         void initialize();
 
         void process_message(std::string&& message);
@@ -84,5 +104,10 @@ namespace signalr
         void reset_server_timeout();
 
         void start_keepalive();
+
+        // Reconnect methods
+        void handle_disconnection(std::exception_ptr exception);
+        void attempt_reconnect();
+        std::chrono::milliseconds get_next_reconnect_delay();
     };
 }

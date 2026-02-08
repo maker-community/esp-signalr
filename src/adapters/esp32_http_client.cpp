@@ -96,6 +96,8 @@ http_response esp32_http_client::perform_request(const std::string& url,
         ESP_LOGI(TAG, "HTTP Status: %d, Response length: %d", 
                 response.status_code, m_response_buffer.length());
     } else {
+        // Set cleanup flag BEFORE cleanup to prevent cancellation callback from accessing freed client
+        cleanup_flag->store(true, std::memory_order_release);
         esp_http_client_cleanup(client);
         throw std::runtime_error("HTTP request failed: " + std::string(esp_err_to_name(err)));
     }

@@ -14,6 +14,7 @@ A complete ESP32/ESP-IDF implementation of Microsoft SignalR client, adapted fro
 ## Features
 
 - ✅ Full SignalR protocol support (Hub connections, negotiation, handshake)
+- ✅ **Auto-Reconnect** with exponential backoff (similar to JS/C# clients)
 - ✅ WebSocket transport using ESP-IDF native `esp_websocket_client`
 - ✅ HTTP client using ESP-IDF native `esp_http_client`
 - ✅ JSON serialization using `cJSON`
@@ -62,6 +63,8 @@ git clone https://github.com/maker-community/esp-signalr.git verdure__esp-signal
 
 ## Quick Start
 
+### Basic Connection
+
 ```cpp
 #include "hub_connection_builder.h"
 #include "esp32_websocket_client.h"
@@ -94,6 +97,42 @@ std::vector<signalr::value> args;
 args.push_back(signalr::value("Hello from ESP32!"));
 connection.invoke("SendMessage", args);
 ```
+
+### With Auto-Reconnect (Recommended)
+
+```cpp
+#include "hub_connection_builder.h"
+
+// Create connection with automatic reconnect (default delays: 0, 2, 10, 30 seconds)
+auto connection = signalr::hub_connection_builder()
+    .with_url("wss://your-server.com/hub")
+    .skip_negotiation()  // Skip negotiation if WebSocket-only
+    .with_automatic_reconnect()  // Enable auto-reconnect
+    .build();
+
+// Or with custom reconnect delays:
+// std::vector<std::chrono::milliseconds> delays = {
+//     std::chrono::seconds(0), std::chrono::seconds(1),
+//     std::chrono::seconds(5), std::chrono::seconds(15)
+// };
+// .with_automatic_reconnect(delays)
+
+// Handle disconnection
+connection.set_disconnected([](std::exception_ptr ex) {
+    ESP_LOGW("SignalR", "Disconnected, auto-reconnect active...");
+});
+
+// Register handlers and start
+connection.on("ReceiveMessage", [](const std::vector<signalr::value>& args) {
+    ESP_LOGI("SignalR", "Message: %s", args[0].as_string().c_str());
+});
+
+connection.start([](std::exception_ptr ex) {
+    if (!ex) ESP_LOGI("SignalR", "Connected!");
+});
+```
+
+See [Auto-Reconnect Guide](docs/AUTO_RECONNECT_CN.md) for more details.
 
 ## Memory Usage
 
@@ -146,15 +185,21 @@ The example includes:
 ### Getting Started
 - 📖 [Quick Start Guide](docs/QUICKSTART.md) - Get running in 5 minutes
 - 📖 [Integration Guide](docs/INTEGRATION_GUIDE.md) - Detailed integration steps
+- 🔄 [Auto-Reconnect Guide (中文)](docs/AUTO_RECONNECT_CN.md) - Automatic reconnection feature
+- 🔄 [Auto-Reconnect Guide (English)](docs/AUTO_RECONNECT.md) - Detailed reconnect documentation
+- 🔧 [Troubleshooting (故障排除)](docs/TROUBLESHOOTING_CN.md) - 自动重连故障排除
+- 🔧 [Troubleshooting (English)](docs/TROUBLESHOOTING.md) - Auto-reconnect troubleshooting
 
 ### Configuration & Optimization
 - ⚙️ [Configuration Guide](docs/CONFIGURATION_GUIDE.md) - Memory optimization tips
 - 📊 [Optimization Report](docs/OPTIMIZATION_REPORT.md) - Round 1: Basic optimizations
 - 🔬 [Advanced Optimization](docs/ADVANCED_OPTIMIZATION.md) - Round 2: Conditional compilation
 - ✅ [Final Optimizations](docs/FINAL_OPTIMIZATIONS.md) - Round 3: Stability & debugging
+- 🔧 [Pthread Stack Fix](docs/PTHREAD_STACK_FIX.md) - Fix for stack overflow issues
 
 ### Examples & Testing
 - 💻 [Complete Example Project](https://github.com/maker-community/esp-signalr-example)
+- 💡 [Auto-Reconnect Example](docs/examples/auto_reconnect_example.cpp) - Complete code example
 - 🧪 [ASP.NET Core Test Server Setup](https://github.com/maker-community/esp-signalr-example/blob/main/TEST_SERVER.md)
 
 ## Memory Usage

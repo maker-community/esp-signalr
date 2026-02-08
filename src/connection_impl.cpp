@@ -18,6 +18,7 @@
 #include <assert.h>
 #include "websocket_client.h"
 #include "signalr_default_scheduler.h"
+#include "esp_log.h"
 
 namespace signalr
 {
@@ -140,6 +141,7 @@ namespace signalr
 
     void connection_impl::start(std::function<void(std::exception_ptr)> callback) noexcept
     {
+        ESP_LOGI("CONN_IMPL", ">>> start() CALLED <<<");
         {
             std::lock_guard<std::mutex> lock(m_stop_lock);
             m_logger.log(trace_level::verbose, "acquired lock in start()");
@@ -149,8 +151,12 @@ namespace signalr
                     logger.log(trace_level::verbose, "released lock in start()");
                 });
 
+            auto current_state = get_connection_state();
+            ESP_LOGI("CONN_IMPL", "start(): current_state=%d", (int)current_state);
+            
             if (!change_state(connection_state::disconnected, connection_state::connecting))
             {
+                ESP_LOGE("CONN_IMPL", "start(): cannot start, not in disconnected state");
                 callback(std::make_exception_ptr(signalr_exception("cannot start a connection that is not in the disconnected state")));
                 return;
             }
@@ -158,7 +164,10 @@ namespace signalr
             // there should not be any active transport at this point
             assert(!m_transport);
 
+            ESP_LOGI("CONN_IMPL", "start(): calling m_disconnect_cts->reset()...");
             m_disconnect_cts->reset();
+            ESP_LOGI("CONN_IMPL", "start(): reset() completed successfully");
+            
             m_start_completed_event.reset();
             m_connection_id = "";
         }
@@ -170,6 +179,7 @@ namespace signalr
             m_signalr_client_config.set_scheduler(m_scheduler);
         }
 
+        ESP_LOGI("CONN_IMPL", "start(): calling start_negotiate()...");
         start_negotiate(m_base_url, callback);
     }
 
@@ -704,6 +714,7 @@ namespace signalr
     // do not use `shared_from_this` as it can be called via the destructor
     void connection_impl::stop_connection(std::exception_ptr error)
     {
+        ESP_LOGI("CONN_IMPL", ">>> stop_connection CALLED <<<");
         {
             // the lock prevents a race where the user calls `stop` on a disconnected connection and calls `start`
             // on a different thread at the same time. In this case we must not null out the transport if we are
@@ -752,9 +763,11 @@ namespace signalr
             m_logger.log(trace_level::info, "connection closed");
         }
 
+        ESP_LOGI("CONN_IMPL", "Calling m_disconnected callback (should trigger handle_disconnection)...");
         try
         {
             m_disconnected(error);
+            ESP_LOGI("CONN_IMPL", "m_disconnected callback returned successfully");
         }
         catch (const std::exception & e)
         {

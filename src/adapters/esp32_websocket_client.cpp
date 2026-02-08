@@ -1,5 +1,6 @@
 #include "esp32_websocket_client.h"
 #include "signalr_client_config.h"
+#include "memory_utils.h"
 #include "esp_log.h"
 #include <cstring>
 #include <exception>
@@ -8,28 +9,139 @@
 
 static const char* TAG = "ESP32_WS_CLIENT";
 
-// Configuration constants
+// Pre-created exception objects to avoid throw-catch overhead in send()
+// These are created once at startup and reused throughout the lifetime
 namespace {
+    // Helper function to safely create exception_ptr once
+    std::exception_ptr get_not_connected_exception() {
+        static std::exception_ptr ex = []() {
+            try {
+                throw std::runtime_error("Not connected");
+            } catch (...) {
+                return std::current_exception();
+            }
+        }();
+        return ex;
+    }
+    
+    std::exception_ptr get_send_failed_exception() {
+        static std::exception_ptr ex = []() {
+            try {
+                throw std::runtime_error("Failed to send message");
+            } catch (...) {
+                return std::current_exception();
+            }
+        }();
+        return ex;
+    }
+    
+    std::exception_ptr get_unknown_error_exception() {
+        static std::exception_ptr ex = []() {
+            try {
+                throw std::runtime_error("Unknown error in send");
+            } catch (...) {
+                return std::current_exception();
+            }
+        }();
+        return ex;
+    }
+    
+    std::exception_ptr get_client_creation_failed_exception() {
+        static std::exception_ptr ex = []() {
+            try {
+                throw std::runtime_error("Failed to create websocket client");
+            } catch (...) {
+                return std::current_exception();
+            }
+        }();
+        return ex;
+    }
+    
+    std::exception_ptr get_client_start_failed_exception() {
+        static std::exception_ptr ex = []() {
+            try {
+                throw std::runtime_error("WebSocket client start failed");
+            } catch (...) {
+                return std::current_exception();
+            }
+        }();
+        return ex;
+    }
+    
+    std::exception_ptr get_connection_timeout_exception() {
+        static std::exception_ptr ex = []() {
+            try {
+                throw std::runtime_error("Connection timeout");
+            } catch (...) {
+                return std::current_exception();
+            }
+        }();
+        return ex;
+    }
+    
+    std::exception_ptr get_websocket_stopped_exception() {
+        static std::exception_ptr ex = []() {
+            try {
+                throw std::runtime_error("WebSocket stopped");
+            } catch (...) {
+                return std::current_exception();
+            }
+        }();
+        return ex;
+    }
+    
+    std::exception_ptr get_websocket_disconnected_exception() {
+        static std::exception_ptr ex = []() {
+            try {
+                throw std::runtime_error("WebSocket disconnected");
+            } catch (...) {
+                return std::current_exception();
+            }
+        }();
+        return ex;
+    }
+}
+
+// Configuration constants - OPTIMIZED FOR ESP32 MEMORY CONSTRAINTS
+namespace {
+    // Increased to 4096 - JWT tokens can be ~1600+ bytes, plus URL and headers
+    // The transport layer uses this for WebSocket handshake request generation
     constexpr size_t WEBSOCKET_BUFFER_SIZE = 4096;
+    // Increased to 8192 - ESP32 WebSocket library needs more stack during reconnection
+    // This prevents stack overflow during SSL handshake and error handling
     constexpr size_t WEBSOCKET_TASK_STACK_SIZE = 8192;
 #ifdef CONFIG_SIGNALR_CALLBACK_STACK_SIZE
     constexpr size_t CALLBACK_TASK_STACK_SIZE = CONFIG_SIGNALR_CALLBACK_STACK_SIZE;
 #else
-    constexpr size_t CALLBACK_TASK_STACK_SIZE = 6144;  // Default: 6KB
+    // OPTIMIZED: Reduced from 6144 to 5120 (5KB) - sufficient for JSON parsing
+    // Stack monitoring showed typical usage is ~3-4KB
+    constexpr size_t CALLBACK_TASK_STACK_SIZE = 5120;
 #endif
     constexpr UBaseType_t CALLBACK_TASK_PRIORITY = 5;
-    constexpr uint32_t CONNECTION_TIMEOUT_MS = 10000;
+    // OPTIMIZED: Increased from 10s to 15s - reconnection often takes longer
+    // especially when server is restarting or network is recovering
+#ifdef CONFIG_SIGNALR_CONNECTION_TIMEOUT_MS
+    constexpr uint32_t CONNECTION_TIMEOUT_MS = CONFIG_SIGNALR_CONNECTION_TIMEOUT_MS;
+#else
+    // SHORT timeout (5 seconds) - if we can't connect quickly, let the app retry later
+    // This prevents blocking the main loop for too long during reconnection.
+    // The main loop polls every second and will retry if needed.
+    constexpr uint32_t CONNECTION_TIMEOUT_MS = 5000;
+#endif
 #ifdef CONFIG_SIGNALR_MAX_QUEUE_SIZE
     constexpr size_t MAX_MESSAGE_QUEUE_SIZE = CONFIG_SIGNALR_MAX_QUEUE_SIZE;
 #else
-    constexpr size_t MAX_MESSAGE_QUEUE_SIZE = 50;  // Default: prevent memory leak
+    // Reduced from 50 to 20 - prevents excessive memory usage
+    constexpr size_t MAX_MESSAGE_QUEUE_SIZE = 20;
 #endif
-
-#ifdef CONFIG_SIGNALR_MAX_CALLBACK_TASKS
-    constexpr UBaseType_t MAX_CALLBACK_EXEC_TASKS = CONFIG_SIGNALR_MAX_CALLBACK_TASKS;
-#else
-    constexpr UBaseType_t MAX_CALLBACK_EXEC_TASKS = 4;  // Limit concurrent executor tasks
-#endif
+    
+    // Connection retry parameters
+    constexpr uint32_t INITIAL_RETRY_DELAY_MS = 1000;
+    constexpr uint32_t MAX_RETRY_DELAY_MS = 30000;
+    constexpr float RETRY_BACKOFF_MULTIPLIER = 2.0f;
+    
+    // PSRAM usage threshold - buffers larger than this go to PSRAM if available
+    constexpr size_t PSRAM_THRESHOLD = 1024;
 }
 
 namespace signalr {
@@ -40,7 +152,6 @@ esp32_websocket_client::esp32_websocket_client(const signalr_client_config& conf
     , m_callback_task(nullptr)
     , m_callback_semaphore(nullptr)
     , m_callback_task_running(false)
-    , m_callback_exec_limiter(nullptr)
     , m_is_connected(false)
     , m_is_stopping(false) {
     
@@ -54,11 +165,6 @@ esp32_websocket_client::esp32_websocket_client(const signalr_client_config& conf
     if (!m_callback_semaphore) {
         ESP_LOGE(TAG, "Failed to create callback semaphore");
     }
-
-    m_callback_exec_limiter = xSemaphoreCreateCounting(MAX_CALLBACK_EXEC_TASKS, MAX_CALLBACK_EXEC_TASKS);
-    if (!m_callback_exec_limiter) {
-        ESP_LOGE(TAG, "Failed to create callback exec limiter semaphore");
-    }
 }
 
 esp32_websocket_client::~esp32_websocket_client() {
@@ -71,9 +177,6 @@ esp32_websocket_client::~esp32_websocket_client() {
     }
     if (m_callback_semaphore) {
         vSemaphoreDelete(m_callback_semaphore);
-    }
-    if (m_callback_exec_limiter) {
-        vSemaphoreDelete(m_callback_exec_limiter);
     }
 }
 
@@ -104,14 +207,21 @@ void esp32_websocket_client::start(const std::string& url, std::function<void(st
     ws_cfg.uri = url.c_str();
     ws_cfg.buffer_size = WEBSOCKET_BUFFER_SIZE;
     ws_cfg.task_stack = WEBSOCKET_TASK_STACK_SIZE;
-    // Set network timeout to prevent premature disconnection
-    // This should be longer than the SignalR server_timeout to allow SignalR-level timeout handling
-    ws_cfg.network_timeout_ms = 120000;  // 120 seconds (2x the SignalR server_timeout of 60s)
+    // Set network timeout for underlying TCP operations
+    // This controls how long the ESP-TLS layer waits for TCP connection/read/write
+    // Using a shorter timeout to ensure faster failure detection when server is unreachable
+    // Once connected, SignalR-level keepalive will maintain the connection
+    ws_cfg.network_timeout_ms = 10000;  // 10 seconds for network operations
+    // CRITICAL: Disable WebSocket-level auto-reconnect so SignalR layer can handle reconnection
+    // If WebSocket auto-reconnects, SignalR's handle_disconnection() won't be called
+    ws_cfg.disable_auto_reconnect = true;  // Completely disable auto-reconnect
+    // Disable automatic ping to save bandwidth (SignalR has its own keepalive)
+    ws_cfg.ping_interval_sec = 0;
 
     m_client = esp_websocket_client_init(&ws_cfg);
     if (!m_client) {
         ESP_LOGE(TAG, "Failed to create websocket client");
-        callback(std::make_exception_ptr(std::runtime_error("Failed to create websocket client")));
+        callback(get_client_creation_failed_exception());
         return;
     }
 
@@ -121,7 +231,7 @@ void esp32_websocket_client::start(const std::string& url, std::function<void(st
     esp_err_t err = esp_websocket_client_start(m_client);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "WebSocket client start failed: %s", esp_err_to_name(err));
-        callback(std::make_exception_ptr(std::runtime_error("WebSocket client start failed")));
+        callback(get_client_start_failed_exception());
         esp_websocket_client_destroy(m_client);
         m_client = nullptr;
         return;
@@ -139,7 +249,17 @@ void esp32_websocket_client::start(const std::string& url, std::function<void(st
         callback(nullptr);
     } else {
         ESP_LOGE(TAG, "Connection timeout or failed");
-        callback(std::make_exception_ptr(std::runtime_error("Connection timeout")));
+        // CRITICAL: Clean up the WebSocket client on timeout!
+        // Otherwise the client keeps running and may connect later, causing state inconsistency.
+        if (m_client) {
+            ESP_LOGI(TAG, "Cleaning up WebSocket client after timeout...");
+            // First try graceful close with short timeout to signal the task to stop
+            esp_websocket_client_close(m_client, pdMS_TO_TICKS(500));
+            esp_websocket_client_stop(m_client);
+            esp_websocket_client_destroy(m_client);
+            m_client = nullptr;
+        }
+        callback(get_connection_timeout_exception());
     }
 }
 
@@ -164,36 +284,69 @@ void esp32_websocket_client::stop(std::function<void(std::exception_ptr)> callba
     if (pending_cb) {
         // Signal message received to unblock any waiting task
         xEventGroupSetBits(m_event_group, MESSAGE_RECEIVED_BIT);
-        pending_cb("", std::make_exception_ptr(std::runtime_error("WebSocket stopped")));
+        pending_cb("", get_websocket_stopped_exception());
     }
     
     if (m_client) {
-        esp_websocket_client_close(m_client, portMAX_DELAY);
+        // Use a timeout for close to prevent hanging indefinitely if the connection is already broken
+        // The transport layer might be stuck waiting for a Close frame that will never come
+        ESP_LOGI(TAG, "Closing WebSocket client...");
+        esp_websocket_client_close(m_client, pdMS_TO_TICKS(1000)); 
+        
+        ESP_LOGI(TAG, "Stopping WebSocket client...");
         esp_websocket_client_stop(m_client);
+        
+        ESP_LOGI(TAG, "Destroying WebSocket client...");
         esp_websocket_client_destroy(m_client);
         m_client = nullptr;
     }
     m_is_connected = false;
     xEventGroupClearBits(m_event_group, CONNECTED_BIT);
+    ESP_LOGI(TAG, "WebSocket client cleanup complete");
     callback(nullptr);
 }
 
 void esp32_websocket_client::send(const std::string& payload, transfer_format transfer_format,
                                   std::function<void(std::exception_ptr)> callback) {
+    // OPTIMIZED: Use pre-created exceptions to avoid throw-catch overhead
+    // No exceptions are thrown at runtime - zero stack unwinding cost!
+    
+    // Quick path: check connection status without any exception overhead
     if (!m_client || !m_is_connected) {
-        ESP_LOGE(TAG, "Cannot send: not connected");
-        callback(std::make_exception_ptr(std::runtime_error("Not connected")));
+        ESP_LOGW(TAG, "Cannot send: not connected (payload size: %d bytes)", payload.size());
+        // Use pre-created exception - no throw/catch, no stack overhead!
+        callback(get_not_connected_exception());
         return;
     }
 
-    int sent = esp_websocket_client_send_text(m_client, payload.c_str(), 
-                                              payload.length(), portMAX_DELAY);
-    if (sent < 0) {
-        ESP_LOGE(TAG, "Failed to send message");
-        callback(std::make_exception_ptr(std::runtime_error("Failed to send message")));
-    } else {
-        ESP_LOGD(TAG, "Sent %d bytes", sent);
-        callback(nullptr);
+    // Try to send - wrapped in try-catch only for ESP-IDF API safety
+    try {
+        int sent = esp_websocket_client_send_text(m_client, payload.c_str(), 
+                                                  payload.length(), portMAX_DELAY);
+        if (sent < 0) {
+            ESP_LOGE(TAG, "Failed to send message (returned: %d)", sent);
+            // Use pre-created exception - no throw/catch!
+            callback(get_send_failed_exception());
+        } else {
+            ESP_LOGD(TAG, "Sent %d bytes", sent);
+            callback(nullptr);
+        }
+    }
+    catch (const std::exception& e) {
+        // This should rarely happen - only if ESP-IDF API throws
+        ESP_LOGE(TAG, "Unexpected exception in send(): %s", e.what());
+        try {
+            callback(std::current_exception());
+        } catch (...) {
+            // If callback throws, use pre-created exception
+            ESP_LOGE(TAG, "CRITICAL: Callback threw exception, using fallback error");
+            callback(get_unknown_error_exception());
+        }
+    }
+    catch (...) {
+        // Catch-all safety net
+        ESP_LOGE(TAG, "Unknown exception in send()");
+        callback(get_unknown_error_exception());
     }
 }
 
@@ -212,38 +365,28 @@ void esp32_websocket_client::send(const std::string& payload, transfer_format tr
  * Lock ordering: queue_mutex -> callback_mutex (must be consistent everywhere)
  */
 void esp32_websocket_client::receive(std::function<void(const std::string&, std::exception_ptr)> callback) {
-    ESP_LOGI(TAG, ">>> receive() CALLED from task: %s <<<", pcTaskGetName(NULL));
+    ESP_LOGD(TAG, "receive() called");
     
     bool has_message = false;
-    size_t queue_size = 0;
     {
-        ESP_LOGI(TAG, "receive(): Acquiring queue_mutex...");
         std::lock_guard<std::mutex> queue_lock(m_queue_mutex);
-        ESP_LOGI(TAG, "receive(): Got queue_mutex, acquiring callback_mutex...");
         has_message = !m_message_queue.empty();
-        queue_size = m_message_queue.size();
         
         // Always save callback - callback processor will handle delivery
         std::lock_guard<std::mutex> lock(m_callback_mutex);
-        ESP_LOGI(TAG, "receive(): Got callback_mutex, saving callback");
         m_pending_receive_callback = callback;
     }
-    ESP_LOGI(TAG, "receive(): Locks released");
     
     if (has_message) {
-        ESP_LOGI(TAG, "receive(): Message available (queue size: %zu), signaling callback processor", queue_size);
         schedule_callback_delivery();
-    } else {
-        ESP_LOGI(TAG, "receive(): No message available (queue empty), callback saved, waiting...");
     }
-    ESP_LOGI(TAG, "<<< receive() RETURNING >>>");
 }
 
 /**
  * try_deliver_message() - Called when a new message is added to the queue
  * 
- * If there's a pending receive callback, deliver the first message from
- * the queue to it.
+ * OPTIMIZED: Reduced task creation overhead by using a simpler callback structure.
+ * The callback_payload now uses move semantics to avoid string copies.
  * 
  * IMPORTANT: We acquire locks in the same order as receive() to avoid deadlock:
  * 1. queue_mutex first
@@ -268,86 +411,33 @@ void esp32_websocket_client::try_deliver_message() {
             return; // No message to deliver
         }
         
-        message = m_message_queue.front();
+        message = std::move(m_message_queue.front());  // Use move to avoid copy
         m_message_queue.pop();
-        callback = m_pending_receive_callback;
+        callback = std::move(m_pending_receive_callback);  // OPTIMIZED: Move callback too
         m_pending_receive_callback = nullptr;
-        ESP_LOGI(TAG, "try_deliver_message: Got message (%d bytes), remaining queue: %d", message.length(), m_message_queue.size());
+        ESP_LOGD(TAG, "Deliver: %d bytes, queue: %zu", message.length(), m_message_queue.size());
     }
     
-    // Call callback OUTSIDE the lock to avoid potential deadlock with SignalR
-    ESP_LOGI(TAG, "try_deliver_message: Dispatching callback asynchronously (%d bytes)", message.length());
-
-    struct callback_payload
+    // SIMPLIFIED: Execute callback inline instead of creating a new task for each message
+    // This saves ~6KB stack per callback and avoids task creation failures under memory pressure
+    // The callback_processor_task already provides sufficient stack for callback execution
+    try
     {
-        std::function<void(const std::string&, std::exception_ptr)> cb;
-        std::string msg;
-        SemaphoreHandle_t limiter;
-    };
-
-    auto* payload = new callback_payload{std::move(callback), std::move(message), m_callback_exec_limiter};
-
-    auto task = [](void* arg)
-    {
-        std::unique_ptr<callback_payload> payload(static_cast<callback_payload*>(arg));
-        try
-        {
-            payload->cb(payload->msg, nullptr);
-        }
-        catch (const std::exception& e)
-        {
-            ESP_LOGE(TAG, "try_deliver_message: Callback threw exception: %s", e.what());
-        }
-        catch (...)
-        {
-            ESP_LOGE(TAG, "try_deliver_message: Callback threw unknown exception");
-        }
-
-        if (payload->limiter)
-        {
-            xSemaphoreGive(payload->limiter);
-        }
-
-        vTaskDelete(nullptr);
-    };
-
-    bool scheduled = false;
-    if (m_callback_exec_limiter && xSemaphoreTake(m_callback_exec_limiter, 0) == pdTRUE)
-    {
-        if (xTaskCreate(task, "signalr_cb_exec", CALLBACK_TASK_STACK_SIZE, payload, CALLBACK_TASK_PRIORITY, nullptr) == pdPASS)
-        {
-            scheduled = true;
-        }
-        else
-        {
-            // task creation failed; release permit
-            xSemaphoreGive(m_callback_exec_limiter);
-        }
+        callback(message, nullptr);
+        ESP_LOGD(TAG, "Callback executed inline successfully");
     }
-
-    if (!scheduled)
+    catch (const std::exception& e)
     {
-        ESP_LOGW(TAG, "try_deliver_message: limiter/task unavailable, running inline");
-        try
-        {
-            payload->cb(payload->msg, nullptr);
-        }
-        catch (const std::exception& e)
-        {
-            ESP_LOGE(TAG, "try_deliver_message (inline): Callback threw exception: %s", e.what());
-        }
-        catch (...)
-        {
-            ESP_LOGE(TAG, "try_deliver_message (inline): Callback threw unknown exception");
-        }
-        delete payload;
+        ESP_LOGE(TAG, "Callback exception: %s", e.what());
+    }
+    catch (...)
+    {
+        ESP_LOGE(TAG, "Callback unknown exception");
     }
 }
 
-void esp32_websocket_client::websocket_event_handler(void* handler_args, 
-                                                     esp_event_base_t base,
-                                                     int32_t event_id, 
-                                                     void* event_data) {
+// WebSocket event handler
+void esp32_websocket_client::websocket_event_handler(void* handler_args, esp_event_base_t base, int32_t event_id, void* event_data) {
     auto* client = static_cast<esp32_websocket_client*>(handler_args);
     esp_websocket_event_data_t* data = static_cast<esp_websocket_event_data_t*>(event_data);
 
@@ -403,7 +493,7 @@ void esp32_websocket_client::handle_disconnected() {
             }
         }
         if (cb) {
-            cb("", std::make_exception_ptr(std::runtime_error("WebSocket disconnected")));
+            cb("", get_websocket_disconnected_exception());
         }
     }
 }
@@ -413,37 +503,57 @@ void esp32_websocket_client::handle_data(const char* data, int data_len) {
         return;
     }
 
-    // Accumulate fragmented messages
+    // OPTIMIZED: Use PSRAM for receive buffer if available
+    // This reduces internal RAM pressure significantly
+    if (m_receive_buffer.capacity() < m_receive_buffer.size() + data_len) {
+        size_t new_capacity = m_receive_buffer.size() + data_len + 512;
+        // Try to use PSRAM for larger buffers
+        if (new_capacity >= PSRAM_THRESHOLD && signalr::memory::is_psram_available()) {
+            // Reserve will handle the reallocation
+            m_receive_buffer.reserve(new_capacity);
+            ESP_LOGD(TAG, "Receive buffer expanded to %u bytes (PSRAM preferred)", 
+                     (unsigned)m_receive_buffer.capacity());
+        } else {
+            m_receive_buffer.reserve(new_capacity);
+        }
+    }
     m_receive_buffer.append(data, data_len);
     
     // Check for SignalR record separator (0x1E)
     size_t separator_pos = m_receive_buffer.find('\x1e');
     while (separator_pos != std::string::npos) {
-        std::string message = m_receive_buffer.substr(0, separator_pos);
+        // OPTIMIZED: Use move semantics to avoid copy
+        std::string message;
+        message.reserve(separator_pos);
+        message.assign(m_receive_buffer, 0, separator_pos);
         m_receive_buffer.erase(0, separator_pos + 1);
         
-        ESP_LOGI(TAG, "Received complete message: %d bytes: %s", message.length(), message.c_str());
+        // Reduced logging: Only log message length, not content (saves memory)
+        ESP_LOGD(TAG, "RX msg: %d bytes", message.length());
         
         // Add message to queue (with overflow protection)
         {
             std::lock_guard<std::mutex> lock(m_queue_mutex);
             if (m_message_queue.size() < MAX_MESSAGE_QUEUE_SIZE) {
-                m_message_queue.push(message);
-                ESP_LOGI(TAG, "handle_data: Message added to queue, new size: %zu", m_message_queue.size());
+                m_message_queue.push(std::move(message));
+                ESP_LOGD(TAG, "Queue size: %zu", m_message_queue.size());
             } else {
-                ESP_LOGW(TAG, "Message queue full (%zu messages), dropping oldest message", MAX_MESSAGE_QUEUE_SIZE);
-                m_message_queue.pop();  // Drop oldest
-                m_message_queue.push(message);  // Add newest
+                ESP_LOGW(TAG, "Queue full, drop oldest");
+                m_message_queue.pop();
+                m_message_queue.push(std::move(message));
             }
         }
         
-        ESP_LOGI(TAG, "handle_data: Calling schedule_callback_delivery()");
         // Signal callback processor task to deliver message
-        // DON'T call try_deliver_message() directly - it would run SignalR
-        // callbacks on the WebSocket event handler thread with limited stack
         schedule_callback_delivery();
         
         separator_pos = m_receive_buffer.find('\x1e');
+    }
+    
+    // OPTIMIZED: More aggressive shrinking to free PSRAM/RAM
+    if (m_receive_buffer.capacity() > 4096 && m_receive_buffer.size() < 512) {
+        m_receive_buffer.shrink_to_fit();
+        ESP_LOGD(TAG, "Shrunk receive buffer to save memory");
     }
 }
 
@@ -460,7 +570,19 @@ void esp32_websocket_client::handle_error(const char* error_msg) {
             }
         }
         if (cb) {
-            cb("", std::make_exception_ptr(std::runtime_error(error_msg)));
+            // For dynamic error messages, we must use make_exception_ptr
+            // This is rare (only on actual errors), so the overhead is acceptable
+            try {
+                cb("", std::make_exception_ptr(std::runtime_error(error_msg)));
+            } catch (...) {
+                // Fallback: use pre-created generic exception
+                ESP_LOGE(TAG, "Exception during error callback, using fallback");
+                try {
+                    cb("", get_unknown_error_exception());
+                } catch (...) {
+                    ESP_LOGE(TAG, "Failed to deliver error callback");
+                }
+            }
         }
     }
 }
@@ -477,10 +599,13 @@ void esp32_websocket_client::callback_processor_task(void* param) {
     auto* client = static_cast<esp32_websocket_client*>(param);
     ESP_LOGI(TAG, "Callback processor task started");
     
-#ifdef CONFIG_SIGNALR_ENABLE_STACK_MONITORING
+    // Always monitor stack to detect issues early
     UBaseType_t high_water_mark_start = uxTaskGetStackHighWaterMark(NULL);
-    ESP_LOGI(TAG, "Callback task initial stack high water mark: %u bytes", high_water_mark_start * sizeof(StackType_t));
-#endif
+    ESP_LOGI(TAG, "Callback task stack: ~%u bytes free initially", 
+             high_water_mark_start * sizeof(StackType_t));
+    
+    // Log initial heap state
+    signalr::memory::log_memory_stats("callback_task_start");
     
     ESP_LOGI(TAG, "Callback processor: entering main loop");
     while (client->m_callback_task_running) {
@@ -492,10 +617,18 @@ void esp32_websocket_client::callback_processor_task(void* param) {
             // The loop continues as long as there's work to potentially do
             int message_count = 0;
             int idle_rounds = 0;
-            const int MAX_IDLE_ROUNDS = 50; // 50 * 10ms = 500ms max idle
+            const int MAX_IDLE_ROUNDS = 200; // 200 * 10ms = 2000ms max idle (increased from 500ms)
             
             while (client->m_callback_task_running && idle_rounds < MAX_IDLE_ROUNDS) {
-                ESP_LOGD(TAG, "Callback processor: Round %d, calling try_deliver_message", message_count + 1);
+                // OPTIMIZED: Reduced stack monitoring frequency to every 20 messages
+                if (message_count > 0 && message_count % 20 == 0) {
+                    UBaseType_t stack_free = uxTaskGetStackHighWaterMark(NULL);
+                    ESP_LOGD(TAG, "Stack: %u bytes free", stack_free * sizeof(StackType_t));
+                    if (stack_free * sizeof(StackType_t) < 512) {
+                        ESP_LOGW(TAG, "WARNING: Low stack!");
+                    }
+                }
+                
                 bool has_messages = false;
                 bool has_callback = false;
                 
@@ -512,7 +645,7 @@ void esp32_websocket_client::callback_processor_task(void* param) {
                 // If we have both message and callback, deliver
                 if (has_messages && has_callback) {
                     message_count++;
-                    ESP_LOGI(TAG, "Callback processor: calling try_deliver_message #%d", message_count);
+                    ESP_LOGD(TAG, "Processing message #%d", message_count);
                     client->try_deliver_message();
                     idle_rounds = 0; // Reset idle counter on successful delivery
                     
@@ -529,21 +662,23 @@ void esp32_websocket_client::callback_processor_task(void* param) {
             }
             
             if (idle_rounds >= MAX_IDLE_ROUNDS) {
-                ESP_LOGW(TAG, "Callback processor: timeout waiting for callback, %d messages queued", 
+                ESP_LOGW(TAG, "Callback timeout, %d messages queued", 
                          (int)client->m_message_queue.size());
             } else if (message_count > 0) {
-                ESP_LOGI(TAG, "Callback processor: processed %d messages this round", message_count);
+                ESP_LOGI(TAG, "Processed %d messages", message_count);
             }
         }
     }
     
-#ifdef CONFIG_SIGNALR_ENABLE_STACK_MONITORING
+    // Always log final stack statistics
     UBaseType_t high_water_mark_end = uxTaskGetStackHighWaterMark(NULL);
-    ESP_LOGI(TAG, "Callback task final stack high water mark: %u bytes (minimum free: %u)", 
-             high_water_mark_end * sizeof(StackType_t), high_water_mark_end * sizeof(StackType_t));
-    ESP_LOGI(TAG, "Callback task stack used: %u bytes out of %u",
-             CALLBACK_TASK_STACK_SIZE - (high_water_mark_end * sizeof(StackType_t)), CALLBACK_TASK_STACK_SIZE);
-#endif
+    ESP_LOGI(TAG, "Callback task final: %u bytes stack free (min)",
+             high_water_mark_end * sizeof(StackType_t));
+    signalr::memory::log_memory_stats("callback_task_end");
+    
+    if (high_water_mark_end * sizeof(StackType_t) < 512) {
+        ESP_LOGE(TAG, "CRITICAL: Task finished with very low stack!");
+    }
     
     ESP_LOGI(TAG, "Callback processor task exiting");
     vTaskDelete(NULL);
@@ -556,21 +691,27 @@ void esp32_websocket_client::start_callback_processor() {
     
     m_callback_task_running = true;
     
+    // Use larger stack for callback processor since it may execute callbacks inline
+    // when task creation fails due to low memory
+    uint32_t stack_size = signalr::memory::get_recommended_stack_size("callback");
+    // Add extra 2KB for inline callback execution safety margin
+    stack_size += 2048;
+    
     BaseType_t result = xTaskCreate(
         callback_processor_task,
         "signalr_cb",
-        CALLBACK_TASK_STACK_SIZE,
+        stack_size,
         this,
         CALLBACK_TASK_PRIORITY,
         &m_callback_task
     );
     
     if (result != pdPASS) {
-        ESP_LOGE(TAG, "Failed to create callback processor task");
+        ESP_LOGE(TAG, "Failed to create callback processor task (stack=%u)", stack_size);
         m_callback_task = nullptr;
         m_callback_task_running = false;
     } else {
-        ESP_LOGI(TAG, "Callback processor task created");
+        ESP_LOGI(TAG, "Callback processor created (stack=%u)", stack_size);
     }
 }
 

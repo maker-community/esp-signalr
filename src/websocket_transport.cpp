@@ -7,8 +7,10 @@
 #include "signalr_exception.h"
 #include "base_uri.h"
 #include "esp_log.h"
-#include <thread>
 #include <chrono>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "memory_utils.h"
 
 #pragma warning (push)
 #pragma warning (disable : 5204 4355)
@@ -17,6 +19,50 @@
 
 namespace signalr
 {
+    // Parameters for the disconnect cleanup task
+    struct disconnect_task_params {
+        std::shared_ptr<websocket_client> client;
+        std::shared_ptr<websocket_transport> transport;
+        std::exception_ptr exception;
+        logger log;
+    };
+
+    // Task function for disconnect cleanup - runs outside websocket task context
+    static void disconnect_cleanup_task(void* param) {
+        auto* params = static_cast<disconnect_task_params*>(param);
+        
+        ESP_LOGI("WS_TRANSPORT", "Disconnect cleanup task started");
+        
+        // Stop the websocket client (safe now - we're not in websocket task)
+        if (params->client) {
+            std::promise<void> promise;
+            params->client->stop([&promise](std::exception_ptr stop_exception) {
+                if (stop_exception) {
+                    promise.set_exception(stop_exception);
+                } else {
+                    promise.set_value();
+                }
+            });
+            
+            try {
+                promise.get_future().get();
+            } catch (const std::exception& e) {
+                ESP_LOGW("WS_TRANSPORT", "Error stopping websocket client: %s", e.what());
+            } catch (...) {
+                ESP_LOGW("WS_TRANSPORT", "Unknown error stopping websocket client");
+            }
+        }
+        
+        // Call close callback to notify upper layer
+        ESP_LOGI("WS_TRANSPORT", "Calling m_close_callback from cleanup task");
+        if (params->transport) {
+            params->transport->m_close_callback(params->exception);
+        }
+        
+        delete params;
+        ESP_LOGI("WS_TRANSPORT", "Disconnect cleanup task completed");
+        vTaskDelete(nullptr);
+    }
     std::shared_ptr<signalr::transport> websocket_transport::create(const std::function<std::shared_ptr<websocket_client>(const signalr_client_config&)>& websocket_client_factory,
         const signalr_client_config& signalr_client_config, const logger& logger)
     {
@@ -76,41 +122,40 @@ namespace signalr
         // been started in which case we just stop the loop by not scheduling another receive task.
         websocket_client->receive([weak_transport, logger, receive_loop_task, weak_websocket_client](std::string message, std::exception_ptr exception)
             {
-                ESP_LOGI("WS_TRANSPORT", ">>> receive_loop callback ENTERED, message length: %zu <<<", message.length());
+                ESP_LOGD("WS_TRANSPORT", "RX loop: %zu bytes", message.length());
                 
                 auto transport = weak_transport.lock();
-                ESP_LOGI("WS_TRANSPORT", "receive_loop: got transport lock");
 
                 // transport can be null if a websocket transport specific test doesn't call and wait for stop and relies on the destructor, if that happens update the test to call and wait for stop.
                 // stop waits for the receive loop to complete so the transport should never be null
                 assert(transport != nullptr);
 
-                ESP_LOGI("WS_TRANSPORT", "receive_loop: Acquiring m_start_stop_lock...");
+                ESP_LOGD("WS_TRANSPORT", "receive_loop: Acquiring m_start_stop_lock...");
                 bool disconnected;
                 bool got_lock = false;
-                // Avoid deadlock: try-lock with short retries so handshake can proceed even if another thread holds the lock
-                for (int i = 0; i < 50 && !got_lock; ++i) { // ~50 ms worst-case with 1 ms delay
+                // Increased retry count: during reconnection, locks may be held longer
+                // 50 retries * 2ms = 100ms max wait, which is acceptable
+                for (int i = 0; i < 50 && !got_lock; ++i) {
                     if (transport->m_start_stop_lock.try_lock()) {
                         got_lock = true;
                         break;
                     }
-                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                    vTaskDelay(pdMS_TO_TICKS(2));
                 }
 
                 if (got_lock) {
-                    ESP_LOGI("WS_TRANSPORT", "receive_loop: Got m_start_stop_lock");
                     disconnected = transport->m_disconnected;
                     transport->m_start_stop_lock.unlock();
-                    ESP_LOGI("WS_TRANSPORT", "receive_loop: Released m_start_stop_lock, disconnected=%d", disconnected);
                 } else {
-                    // Fall back to a lock-free snapshot to prevent the receive loop from stalling indefinitely
+                    // Still read the value even without lock - better than blocking forever
+                    // This is safe because we only read a boolean atomically
                     disconnected = transport->m_disconnected;
-                    ESP_LOGW("WS_TRANSPORT", "receive_loop: Failed to get m_start_stop_lock after retries, proceeding (disconnected=%d)", disconnected);
+                    // This is expected during handshake when start() holds the lock
+                    ESP_LOGD("WS_TRANSPORT", "Lock busy (100ms), continuing with unlocked read (normal during handshake)");
                 }
                 if (disconnected)
                 {
-                    ESP_LOGW("WS_TRANSPORT", "receive_loop: Already disconnected, returning");
-                    // stop has been called, tell it the receive loop is done and return
+                    ESP_LOGD("WS_TRANSPORT", "Disconnected, exit loop");
                     receive_loop_task->cancel();
                     return;
                 }
@@ -126,7 +171,7 @@ namespace signalr
                     {
                         logger.log(
                             trace_level::error,
-                            std::string("[websocket transport] error receiving response from websocket: ")
+                            std::string("[websocket transport] RX error: ")
                             .append(e.what()));
                     }
                     catch (...)
@@ -152,44 +197,47 @@ namespace signalr
                     receive_loop_task->cancel();
                     return;
                 }
-                ESP_LOGE("WS_TRANSPORT", "receive ERROR: calling m_close_callback to stop connection!");
-                std::promise<void> promise;
-                auto client = weak_websocket_client.lock();
-                if (!client)
-                {
-                    // this should not be hit
-                    // we wait for the receive loop to complete before completing stop (which will then destruct the transport and client)
-                    logger.log(trace_level::critical,
-                        "[websocket transport] websocket client has been destructed before the receive loop completes, this is a bug");
-                    assert(client != nullptr);
-                }
-
-                // because transport.stop won't be called we need to stop the underlying client and invoke the transports close callback
-                client->stop([&promise](std::exception_ptr exception)
-                {
-                    if (exception != nullptr)
-                    {
-                        promise.set_exception(exception);
-                    }
-                    else
-                    {
-                        promise.set_value();
-                    }
-                });
-
-                try
-                {
-                    promise.get_future().get();
-                }
-                // We prefer the outer exception bubbling up to the user
-                // REVIEW: log here?
-                catch (...) {}
-
-                logger.log(trace_level::error, "[websocket transport] calling m_close_callback to trigger connection stop");
+                ESP_LOGE("WS_TRANSPORT", "receive ERROR: connection lost, scheduling cleanup task");
 
                 // Notify connection that transport hit a fatal error so it can transition to disconnected
                 receive_loop_task->cancel();
-                transport->m_close_callback(exception);
+
+                auto client = weak_websocket_client.lock();
+                if (!client) {
+                    logger.log(trace_level::critical,
+                        "[websocket transport] websocket client destructed before receive loop completes");
+                    return;
+                }
+
+                // IMPORTANT: We cannot stop the websocket client from within the websocket task!
+                // The ESP websocket client will deadlock if you try to stop it from its own task.
+                // We must use a separate FreeRTOS task to perform the cleanup.
+                auto* params = new disconnect_task_params{client, transport, exception, logger};
+                
+                // Use a small stack - this task just calls stop() and the callback
+                // 4KB should be enough for the stop() call and callback invocation
+                BaseType_t result = xTaskCreate(
+                    disconnect_cleanup_task,
+                    "signalr_disc",
+                    4096,
+                    params,
+                    5,  // Same priority as other SignalR tasks
+                    nullptr
+                );
+                
+                if (result != pdPASS) {
+                    // Task creation failed - we have a problem
+                    // Try to at least notify upper layer by setting state
+                    ESP_LOGE("WS_TRANSPORT", "Failed to create disconnect cleanup task!");
+                    delete params;
+                    
+                    // As a last resort, call callback directly
+                    // This may cause issues but at least the upper layer knows we disconnected
+                    // The application layer polling will detect the disconnect state
+                    logger.log(trace_level::error, 
+                        "[websocket transport] cleanup task creation failed, calling callback inline (may cause issues)");
+                    transport->m_close_callback(exception);
+                }
                 return;
                 }
 

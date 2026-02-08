@@ -15,9 +15,24 @@
 #include "json_helpers.h"
 #include "websocket_client.h"
 #include "signalr_default_scheduler.h"
+#include "memory_utils.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 #include "esp_log.h"
+
+// OPTIMIZED: Reconnect task stack size - dynamically determined
+namespace {
+    inline uint32_t get_reconnect_stack_size() {
+#ifdef CONFIG_SIGNALR_RECONNECT_STACK_SIZE
+        // Use Kconfig value if specified
+        return CONFIG_SIGNALR_RECONNECT_STACK_SIZE;
+#else
+        // Fall back to dynamic sizing based on PSRAM availability
+        return signalr::memory::get_recommended_stack_size("reconnect");
+#endif
+    }
+}
 
 namespace signalr
 {
@@ -47,7 +62,8 @@ namespace signalr
         : m_connection(connection_impl::create(url, trace_level, log_writer, http_client_factory, websocket_factory, skip_negotiation))
             , m_logger(log_writer, trace_level),
         m_callback_manager("connection went out of scope before invocation result was received"),
-        m_handshakeReceived(false), m_disconnected([](std::exception_ptr) noexcept {}), m_protocol(std::move(hub_protocol))
+        m_handshakeReceived(false), m_disconnected([](std::exception_ptr) noexcept {}), m_protocol(std::move(hub_protocol)),
+        m_reconnecting(false), m_reconnect_attempts(0)
     {
         hub_message ping_msg(signalr::message_type::ping);
         m_cached_ping = m_protocol->write_message(&ping_msg);
@@ -72,24 +88,7 @@ namespace signalr
             auto connection = weak_hub_connection.lock();
             if (connection)
             {
-                // start may be waiting on the handshake response so we complete it here, this no-ops if already set
-                connection->m_handshakeTask->set(std::make_exception_ptr(signalr_exception("connection closed while handshake was in progress.")));
-                try
-                {
-                    connection->m_disconnect_cts->cancel();
-                }
-                catch (const std::exception& ex)
-                {
-                    if (connection->m_logger.is_enabled(trace_level::warning))
-                    {
-                        connection->m_logger.log(trace_level::warning, std::string("disconnect event threw an exception during connection closure: ")
-                            .append(ex.what()));
-                    }
-                }
-
-                connection->m_callback_manager.clear("connection was stopped before invocation result was received");
-
-                connection->m_disconnected(exception);
+                connection->handle_disconnection(exception);
             }
         });
     }
@@ -105,16 +104,21 @@ namespace signalr
         auto connection = weak_connection.lock();
         if (connection && connection->get_connection_state() != connection_state::disconnected)
         {
+            ESP_LOGE("HUB_CONN", "on('%s') FAILED: connection not in disconnected state (state=%d)", 
+                     event_name.c_str(), (int)connection->get_connection_state());
             throw signalr_exception("can't register a handler if the connection is not in a disconnected state");
         }
 
         if (m_subscriptions.find(event_name) != m_subscriptions.end())
         {
+            ESP_LOGE("HUB_CONN", "on('%s') FAILED: handler already registered", event_name.c_str());
             throw signalr_exception(
                 "an action for this event has already been registered. event name: " + event_name);
         }
 
         m_subscriptions.insert({event_name, handler});
+        ESP_LOGI("HUB_CONN", "on('%s') SUCCESS: handler registered, total subscriptions=%d", 
+                 event_name.c_str(), (int)m_subscriptions.size());
     }
 
     void hub_connection_impl::start(std::function<void(std::exception_ptr)> callback) noexcept
@@ -124,6 +128,12 @@ namespace signalr
             callback(std::make_exception_ptr(signalr_exception(
                 "the connection can only be started if it is in the disconnected state")));
             return;
+        }
+
+        // Reset reconnect state when manually starting
+        if (!m_reconnecting.load())
+        {
+            m_reconnect_attempts.store(0);
         }
 
         m_connection->set_client_config(m_signalr_client_config);
@@ -314,6 +324,29 @@ namespace signalr
 
     void hub_connection_impl::stop(std::function<void(std::exception_ptr)> callback, bool is_dtor) noexcept
     {
+        // Cancel any ongoing reconnection attempts
+        {
+            std::lock_guard<std::mutex> lock(m_reconnect_lock);
+            if (m_reconnecting.load())
+            {
+                m_logger.log(trace_level::info, "stopping connection and cancelling reconnection attempts");
+                m_reconnecting.store(false);
+                m_reconnect_attempts.store(0);
+                
+                if (m_reconnect_cts)
+                {
+                    try
+                    {
+                        m_reconnect_cts->cancel();
+                    }
+                    catch (...)
+                    {
+                        // Ignore cancellation errors
+                    }
+                }
+            }
+        }
+
         if (get_connection_state() == connection_state::disconnected)
         {
             // don't log if already disconnected and stop called from dtor, it's just noise
@@ -428,7 +461,16 @@ namespace signalr
 
             ESP_LOGI("HUB_CONN", "process_message: Resetting server timeout...");
             reset_server_timeout();
+            
+            // Ensure message has record separator for proper parsing
+            // WebSocket adapter may strip the 0x1E record separator
+            if (response.find(record_separator) == std::string::npos) {
+                ESP_LOGW("HUB_CONN", "process_message: Adding missing record_separator to message");
+                response.push_back(record_separator);
+            }
+            
             auto messages = m_protocol->parse_messages(response);
+            ESP_LOGI("HUB_CONN", "process_message: Parsed %d message(s)", (int)messages.size());
 
             for (const auto& val : messages)
             {
@@ -443,14 +485,19 @@ namespace signalr
                 case message_type::invocation:
                 {
                     auto invocation = static_cast<invocation_message*>(val.get());
+                    ESP_LOGI("HUB_CONN", "Looking for handler: target='%s', subscriptions count=%d", 
+                             invocation->target.c_str(), (int)m_subscriptions.size());
                     auto event = m_subscriptions.find(invocation->target);
                     if (event != m_subscriptions.end())
                     {
+                        ESP_LOGI("HUB_CONN", "Handler FOUND for '%s', calling...", invocation->target.c_str());
                         const auto& args = invocation->arguments;
                         event->second(args);
+                        ESP_LOGI("HUB_CONN", "Handler '%s' call completed", invocation->target.c_str());
                     }
                     else
                     {
+                        ESP_LOGW("HUB_CONN", "Handler NOT FOUND for '%s'", invocation->target.c_str());
                         m_logger.log(trace_level::info, "handler not found");
                     }
                     break;
@@ -740,6 +787,326 @@ namespace signalr
                     set_result(message);
                 }
             };
+        }
+    }
+
+    void hub_connection_impl::handle_disconnection(std::exception_ptr exception)
+    {
+        // Log disconnection handling - this is a normal flow when connection drops
+        ESP_LOGI("HUB_CONN", ">>> handle_disconnection CALLED <<<");
+        m_logger.log(trace_level::info, "handle_disconnection: connection lost, analyzing reconnection options...");
+        
+        // start may be waiting on the handshake response so we complete it here, this no-ops if already set
+        m_handshakeTask->set(std::make_exception_ptr(signalr_exception("connection closed while handshake was in progress.")));
+        
+        try
+        {
+            m_disconnect_cts->cancel();
+        }
+        catch (const std::exception& ex)
+        {
+            if (m_logger.is_enabled(trace_level::warning))
+            {
+                m_logger.log(trace_level::warning, std::string("disconnect event threw an exception during connection closure: ")
+                    .append(ex.what()));
+            }
+        }
+
+        m_callback_manager.clear("connection was stopped before invocation result was received");
+
+        // Check if we should attempt to reconnect
+        bool should_reconnect = false;
+        {
+            std::lock_guard<std::mutex> lock(m_reconnect_lock);
+            
+            bool auto_reconnect_enabled = m_signalr_client_config.is_auto_reconnect_enabled();
+            bool already_reconnecting = m_reconnecting.load();
+            int current_attempts = m_reconnect_attempts.load();
+            int max_attempts = m_signalr_client_config.get_max_reconnect_attempts();
+            
+            // Use ESP_LOGI for visibility in debugging
+            ESP_LOGI("HUB_CONN", "reconnect check: auto_reconnect=%s, reconnecting=%s, attempts=%d, max=%d",
+                auto_reconnect_enabled ? "TRUE" : "FALSE",
+                already_reconnecting ? "TRUE" : "FALSE",
+                current_attempts,
+                max_attempts);
+            
+            // Log reconnection decision factors
+            m_logger.log(trace_level::info, 
+                std::string("reconnect check: auto_reconnect_enabled=").append(auto_reconnect_enabled ? "true" : "false")
+                .append(", already_reconnecting=").append(already_reconnecting ? "true" : "false")
+                .append(", current_attempts=").append(std::to_string(current_attempts))
+                .append(", max_attempts=").append(max_attempts == -1 ? "infinite" : std::to_string(max_attempts)));
+            
+            // Only reconnect if:
+            // 1. The disconnection was due to an error (exception is not null)
+            // 2. Auto-reconnect is enabled
+            // 3. We're not already in a reconnecting state being cancelled
+            // 4. We haven't exceeded max attempts (or max is -1 for infinite)
+            if (exception != nullptr &&
+                auto_reconnect_enabled &&
+                !already_reconnecting &&
+                (max_attempts == -1 || current_attempts < max_attempts))
+            {
+                should_reconnect = true;
+                m_reconnecting.store(true);
+                ESP_LOGI("HUB_CONN", "reconnect decision: YES - will attempt to reconnect");
+                m_logger.log(trace_level::info, "reconnect decision: YES - will attempt to reconnect");
+            }
+            else
+            {
+                ESP_LOGW("HUB_CONN", "reconnect decision: NO (exception=%s, auto_reconnect=%s)", 
+                    exception ? "YES" : "NO", auto_reconnect_enabled ? "TRUE" : "FALSE");
+                m_logger.log(trace_level::info, "reconnect decision: NO - will not reconnect (exception=" + std::string(exception ? "yes" : "no") + ")");
+            }
+        }
+
+        if (should_reconnect)
+        {
+            ESP_LOGI("HUB_CONN", "starting reconnection process...");
+            m_logger.log(trace_level::info, "starting reconnection process...");
+            
+            // Call the disconnected callback to notify user
+            m_disconnected(exception);
+            
+            // Start reconnection attempt
+            attempt_reconnect();
+        }
+        else
+        {
+            // Reset reconnect state if we're not going to reconnect
+            m_reconnecting.store(false);
+            m_reconnect_attempts.store(0);
+            
+            m_logger.log(trace_level::info, "no reconnection will be attempted, calling disconnected callback");
+            
+            // Call the disconnected callback
+            m_disconnected(exception);
+        }
+    }
+
+    // Task function for reconnection - runs in its own task with dedicated stack
+    // This is a friend function declared in hub_connection_impl.h
+    void reconnect_task_function(void* param)
+    {
+        // Take ownership of the parameters
+        auto* params = static_cast<reconnect_task_params*>(param);
+        std::weak_ptr<hub_connection_impl> weak_connection = params->weak_connection;
+        int attempt = params->attempt;
+        auto reconnect_cts = params->reconnect_cts;
+        delete params;  // Free the parameter struct
+
+        // Stack monitoring - CRITICAL for debugging stack overflow
+        UBaseType_t stack_start = uxTaskGetStackHighWaterMark(NULL);
+        uint32_t stack_allocated = get_reconnect_stack_size();
+        ESP_LOGI("HUB_CONN", "reconnect_task: started for attempt %d (stack: %u allocated, %u free)", 
+                 attempt, stack_allocated, stack_start * sizeof(StackType_t));
+
+        // Check if reconnection was cancelled
+        if (reconnect_cts->is_canceled())
+        {
+            ESP_LOGW("HUB_CONN", "reconnect_task: cancelled before start");
+            vTaskDelete(NULL);
+            return;
+        }
+
+        auto connection = weak_connection.lock();
+        if (!connection)
+        {
+            ESP_LOGW("HUB_CONN", "reconnect_task: connection destroyed");
+            vTaskDelete(NULL);
+            return;
+        }
+
+        // Verify connection state before attempting to start
+        auto current_state = connection->get_connection_state();
+        ESP_LOGI("HUB_CONN", "reconnect_task: attempt %d, current state=%d", attempt, (int)current_state);
+
+        if (current_state != connection_state::disconnected)
+        {
+            ESP_LOGW("HUB_CONN", "reconnect_task: not in disconnected state (%d), aborting", (int)current_state);
+            vTaskDelete(NULL);
+            return;
+        }
+
+        // Use a semaphore to wait for start() to complete
+        SemaphoreHandle_t done_sem = xSemaphoreCreateBinary();
+        std::exception_ptr start_exception_result = nullptr;
+
+        connection->m_logger.log(trace_level::info,
+            std::string("starting reconnect attempt ").append(std::to_string(attempt)));
+
+        // Call start() - this is safe now because we're in our own task with enough stack
+        connection->start([done_sem, &start_exception_result](std::exception_ptr start_exception)
+        {
+            start_exception_result = start_exception;
+            xSemaphoreGive(done_sem);
+        });
+
+        // Wait for start() to complete (with 60 second timeout)
+        if (xSemaphoreTake(done_sem, pdMS_TO_TICKS(60000)) != pdTRUE)
+        {
+            ESP_LOGE("HUB_CONN", "reconnect_task: timeout waiting for start()");
+            vSemaphoreDelete(done_sem);
+            vTaskDelete(NULL);
+            return;
+        }
+        vSemaphoreDelete(done_sem);
+
+        // Re-acquire connection (it may have been destroyed during start)
+        connection = weak_connection.lock();
+        if (!connection)
+        {
+            ESP_LOGW("HUB_CONN", "reconnect_task: connection destroyed after start");
+            vTaskDelete(NULL);
+            return;
+        }
+
+        if (start_exception_result)
+        {
+            // Reconnect failed
+            try {
+                std::rethrow_exception(start_exception_result);
+            } catch (const std::exception& e) {
+                ESP_LOGE("HUB_CONN", "reconnect attempt %d failed: %s", attempt, e.what());
+            }
+
+            connection->m_logger.log(trace_level::warning,
+                std::string("reconnect attempt ").append(std::to_string(attempt))
+                .append(" failed"));
+
+            // Check if we should try again
+            bool should_retry = false;
+            {
+                std::lock_guard<std::mutex> lock(connection->m_reconnect_lock);
+
+                int max_attempts = connection->m_signalr_client_config.get_max_reconnect_attempts();
+                if (max_attempts == -1 || attempt < max_attempts)
+                {
+                    should_retry = true;
+                }
+            }
+
+            if (should_retry)
+            {
+                ESP_LOGI("HUB_CONN", "reconnect: will retry (attempt %d)", attempt + 1);
+                // Try again - this will create a new task
+                connection->attempt_reconnect();
+            }
+            else
+            {
+                // Give up
+                ESP_LOGE("HUB_CONN", "reconnect: giving up after %d attempts", attempt);
+                connection->m_logger.log(trace_level::error,
+                    "reconnect failed: maximum retry attempts reached");
+                connection->m_reconnecting.store(false);
+                connection->m_reconnect_attempts.store(0);
+            }
+        }
+        else
+        {
+            // Reconnect succeeded!
+            ESP_LOGI("HUB_CONN", "╔══════════════════════════════════════════════════════╗");
+            ESP_LOGI("HUB_CONN", "║  ✓ RECONNECT SUCCESSFUL (attempt %d)                ║", attempt);
+            ESP_LOGI("HUB_CONN", "╚══════════════════════════════════════════════════════╝");
+
+            connection->m_logger.log(trace_level::info,
+                std::string("reconnect attempt ").append(std::to_string(attempt))
+                .append(" succeeded"));
+
+            // Reset reconnect state
+            connection->m_reconnecting.store(false);
+            connection->m_reconnect_attempts.store(0);
+        }
+
+        ESP_LOGI("HUB_CONN", "reconnect_task: exiting");
+        vTaskDelete(NULL);
+    }
+
+    void hub_connection_impl::attempt_reconnect()
+    {
+        auto delay = get_next_reconnect_delay();
+        int attempt = m_reconnect_attempts.load() + 1;
+        m_reconnect_attempts.store(attempt);
+
+        ESP_LOGI("HUB_CONN", "attempt_reconnect: attempt=%d, delay=%lld ms", attempt, (long long)delay.count());
+
+        m_logger.log(trace_level::info, 
+            std::string("reconnect attempt ").append(std::to_string(attempt))
+            .append(" will start in ").append(std::to_string(delay.count()))
+            .append(" ms"));
+
+        // Create a new cancellation token for this reconnect attempt
+        m_reconnect_cts = std::make_shared<cancellation_token_source>();
+        auto reconnect_cts = m_reconnect_cts;
+        std::weak_ptr<hub_connection_impl> weak_connection = shared_from_this();
+
+        // Wait for the delay before starting reconnection
+        if (delay.count() > 0)
+        {
+            vTaskDelay(pdMS_TO_TICKS(delay.count()));
+        }
+
+        // Check if cancelled during delay
+        if (reconnect_cts->is_canceled())
+        {
+            ESP_LOGW("HUB_CONN", "attempt_reconnect: cancelled during delay");
+            return;
+        }
+
+        // Create parameters for the reconnect task
+        auto* params = new reconnect_task_params{weak_connection, attempt, reconnect_cts};
+
+        // OPTIMIZED: Use dynamic stack size based on PSRAM availability
+        // CRITICAL: Must be at least 12KB for the deep call chain in start()
+        uint32_t reconnect_stack = get_reconnect_stack_size();
+        
+        ESP_LOGI("HUB_CONN", "Creating reconnect task with %u byte stack (PSRAM: %s)", 
+                 reconnect_stack, 
+                 signalr::memory::is_psram_available() ? "yes" : "no");
+        
+        // Create a dedicated task for reconnection with sufficient stack
+        BaseType_t result = xTaskCreate(
+            reconnect_task_function,
+            "signalr_reconn",
+            reconnect_stack,
+            params,
+            5,     // Same priority as other SignalR tasks
+            NULL
+        );
+
+        if (result != pdPASS)
+        {
+            ESP_LOGE("HUB_CONN", "Failed to create reconnect task (stack=%u)!", reconnect_stack);
+            delete params;
+            m_reconnecting.store(false);
+            m_reconnect_attempts.store(0);
+        }
+        else
+        {
+            ESP_LOGD("HUB_CONN", "Created reconnect task with %u byte stack", reconnect_stack);
+        }
+    }
+
+    std::chrono::milliseconds hub_connection_impl::get_next_reconnect_delay()
+    {
+        const auto& delays = m_signalr_client_config.get_reconnect_delays();
+        int attempt = m_reconnect_attempts.load();
+        
+        if (delays.empty())
+        {
+            // Default to 0 if no delays configured
+            return std::chrono::milliseconds(0);
+        }
+        
+        // Use the delay for the current attempt, or the last delay if we've exceeded the array size
+        if (attempt < delays.size())
+        {
+            return delays[attempt];
+        }
+        else
+        {
+            return delays.back();
         }
     }
 }
